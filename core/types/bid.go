@@ -25,6 +25,9 @@ type BidArgs struct {
 	// PayBidTx is a payment tx to builder from sentry, which is optional
 	PayBidTx        hexutil.Bytes `json:"payBidTx"`
 	PayBidTxGasUsed uint64        `json:"payBidTxGasUsed"`
+
+	// 48Club specific
+	NontaxableFee *big.Int `json:"nontaxableFee"`
 }
 
 func (b *BidArgs) EcrecoverSender() (common.Address, error) {
@@ -58,6 +61,13 @@ func (b *BidArgs) ToBid(builder common.Address, signer Signer) (*Bid, error) {
 		txs = append(txs, payBidTx)
 	}
 
+	var nontaxableFee *big.Int
+	if b.NontaxableFee != nil {
+		nontaxableFee = new(big.Int).Set(b.NontaxableFee)
+	} else {
+		nontaxableFee = big.NewInt(0)
+	}
+
 	bid := &Bid{
 		Builder:      builder,
 		BlockNumber:  b.RawBid.BlockNumber,
@@ -68,6 +78,9 @@ func (b *BidArgs) ToBid(builder common.Address, signer Signer) (*Bid, error) {
 		GasFee:       b.RawBid.GasFee,
 		BuilderFee:   b.RawBid.BuilderFee,
 		rawBid:       *b.RawBid,
+
+		// 48Club specific
+		NontaxableFee: nontaxableFee,
 	}
 
 	if bid.BuilderFee == nil {
@@ -174,6 +187,9 @@ type Bid struct {
 	BuilderFee   *big.Int
 
 	rawBid RawBid
+
+	// 48 special
+	NontaxableFee *big.Int
 }
 
 // Hash returns the bid hash.

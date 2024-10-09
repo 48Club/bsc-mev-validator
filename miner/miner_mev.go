@@ -25,6 +25,7 @@ type MevConfig struct {
 	Builders              []BuilderConfig // The list of builders
 	ValidatorCommission   uint64          // 100 means the validator claims 1% from block reward
 	BidSimulationLeftOver time.Duration
+	ValidatorBribeEOA     common.Address
 }
 
 var DefaultMevConfig = MevConfig{
@@ -109,7 +110,7 @@ func (miner *Miner) BestPackedBlockReward(parentHash common.Hash) *big.Int {
 		return big.NewInt(0)
 	}
 
-	return bidRuntime.packedBlockReward
+	return bidRuntime.totalRewardFromBuilder()
 }
 
 func (miner *Miner) MevParams() *types.MevParams {

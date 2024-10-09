@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/holiman/uint256"
 	"math/big"
 	"net"
 	"net/http"
@@ -337,10 +338,6 @@ func (b *bidSimulator) newBidLoop() {
 		}
 	}
 
-	genDiscardedReply := func(betterBid *BidRuntime) error {
-		return fmt.Errorf("bid is discarded, current bestBid is [blockReward: %s, validatorReward: %s]", betterBid.expectedBlockReward, betterBid.expectedValidatorReward)
-	}
-
 	for {
 		select {
 		case newBid := <-b.newBidCh:
@@ -348,30 +345,25 @@ func (b *bidSimulator) newBidLoop() {
 				continue
 			}
 
-			bidRuntime, err := newBidRuntime(newBid.bid, b.config.ValidatorCommission)
-			if err != nil {
-				if newBid.feedback != nil {
-					newBid.feedback <- err
-				}
-				continue
-			}
-
-			var replyErr error
+			var (
+				bidRuntime = newBidRuntime(newBid.bid)
+				replyErr   error
+			)
 			// simulatingBid will be nil if there is no bid in simulation, compare with the bestBid instead
 			if simulatingBid := b.GetSimulatingBid(newBid.bid.ParentHash); simulatingBid != nil {
 				// simulatingBid always better than bestBid, so only compare with simulatingBid if a simulatingBid exists
-				if bidRuntime.isExpectedBetterThan(simulatingBid) {
+				if bidRuntime.isExpectedBetterThanSimulatingBid(simulatingBid) {
 					commit(commitInterruptBetterBid, bidRuntime)
 				} else {
-					replyErr = genDiscardedReply(simulatingBid)
+					replyErr = fmt.Errorf("bid is discarded, current best is %s [after BEP95]", simulatingBid.expectedRewardFromBuilder())
 				}
 			} else {
 				// bestBid is nil means the bid is the first bid, otherwise the bid should compare with the bestBid
 				if bestBid := b.GetBestBid(newBid.bid.ParentHash); bestBid == nil ||
-					bidRuntime.isExpectedBetterThan(bestBid) {
+					bidRuntime.isExpectedBetterThanBestBid(bestBid) {
 					commit(commitInterruptBetterBid, bidRuntime)
 				} else {
-					replyErr = genDiscardedReply(bestBid)
+					replyErr = fmt.Errorf("bid is discarded, current best is %s [after BEP95]", bestBid.totalRewardFromBuilder())
 				}
 			}
 
@@ -382,8 +374,8 @@ func (b *bidSimulator) newBidLoop() {
 					"block", newBid.bid.BlockNumber,
 					"builder", newBid.bid.Builder,
 					"accepted", replyErr == nil,
-					"blockReward", weiToEtherStringF6(bidRuntime.expectedBlockReward),
-					"validatorReward", weiToEtherStringF6(bidRuntime.expectedValidatorReward),
+					"gasFee", weiToEtherStringF6(newBid.bid.GasFee),
+					"nontaxable", weiToEtherStringF6(newBid.bid.NontaxableFee),
 					"tx", len(newBid.bid.Txs),
 					"hash", newBid.bid.Hash().TerminalString(),
 				)
@@ -511,6 +503,7 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		bidTxLen = len(bidTxs)
 		payBidTx = bidTxs[bidTxLen-1]
 
+		receipt *types.Receipt
 		err     error
 		success bool
 	)
@@ -608,17 +601,20 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 			break
 		}
 
-		err = bidRuntime.commitTransaction(b.chain, b.chainConfig, tx, bidRuntime.bid.UnRevertible.Contains(tx.Hash()))
+		receipt, err = bidRuntime.commitTransaction(b.chain, b.chainConfig, tx, bidRuntime.bid.UnRevertible.Contains(tx.Hash()))
 		if err != nil {
 			log.Error("BidSimulator: failed to commit tx", "bidHash", bidRuntime.bid.Hash(), "tx", tx.Hash(), "err", err)
 			err = fmt.Errorf("invalid tx in bid, %v", err)
 			return
 		}
+		if b.config.ValidatorBribeEOA != (common.Address{}) {
+			bidRuntime.checkValidatorBribe(b.config.ValidatorBribeEOA, tx, receipt)
+		}
 	}
 
 	// check if bid reward is valid
 	{
-		bidRuntime.packReward(b.config.ValidatorCommission)
+		bidRuntime.updatePackReward(true)
 		if !bidRuntime.validReward() {
 			err = errors.New("reward does not achieve the expectation")
 			return
@@ -678,13 +674,13 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 				"builder", bidRuntime.bid.Builder, "tx count", bidRuntime.env.tcount-bidTxLen+1, "err", fillErr)
 
 			// recalculate the packed reward
-			bidRuntime.packReward(b.config.ValidatorCommission)
+			bidRuntime.updatePackReward(false)
 		}
 	}
 
 	// commit payBidTx at the end of the block
 	bidRuntime.env.gasPool.AddGas(params.PayBidTxGasLimit)
-	err = bidRuntime.commitTransaction(b.chain, b.chainConfig, payBidTx, true)
+	_, err = bidRuntime.commitTransaction(b.chain, b.chainConfig, payBidTx, true)
 	if err != nil {
 		log.Error("BidSimulator: failed to commit tx", "builder", bidRuntime.bid.Builder,
 			"bidHash", bidRuntime.bid.Hash(), "tx", payBidTx.Hash(), "err", err)
@@ -708,15 +704,21 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		return
 	}
 
+	var (
+		bidContribute       = bidRuntime.totalReward()
+		existBidContribute  = bestBid.totalReward()
+		shouldUpdateBestBid = bidContribute.Cmp(existBidContribute) > 0
+	)
+
 	if bidRuntime.bid.Hash() != bestBid.bid.Hash() {
 		log.Info("[BID RESULT]",
-			"win", bidRuntime.packedBlockReward.Cmp(bestBid.packedBlockReward) >= 0,
+			"win", shouldUpdateBestBid,
 
 			"bidHash", bidRuntime.bid.Hash().TerminalString(),
 			"bestHash", bestBid.bid.Hash().TerminalString(),
 
-			"bidGasFee", weiToEtherStringF6(bidRuntime.packedBlockReward),
-			"bestGasFee", weiToEtherStringF6(bestBid.packedBlockReward),
+			"bidCtb", weiToEtherStringF6(bidContribute),
+			"bestCtb", weiToEtherStringF6(existBidContribute),
 
 			"bidBlockTx", bidRuntime.env.tcount,
 			"bestBlockTx", bestBid.env.tcount,
@@ -726,7 +728,7 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 	}
 
 	// this is the simplest strategy: best for all the delegators.
-	if bidRuntime.packedBlockReward.Cmp(bestBid.packedBlockReward) >= 0 {
+	if shouldUpdateBestBid {
 		b.SetBestBid(bidRuntime.bid.ParentHash, bidRuntime)
 		success = true
 		return
@@ -768,61 +770,80 @@ type BidRuntime struct {
 
 	env *environment
 
-	expectedBlockReward     *big.Int
-	expectedValidatorReward *big.Int
-
-	packedBlockReward     *big.Int
-	packedValidatorReward *big.Int
+	packedBlockRewardPreBEP95Builder *uint256.Int
+	packedBlockRewardPreBEP95Final   *uint256.Int
 
 	finished chan struct{}
 	duration time.Duration
+
+	directBribe *big.Int
 }
 
-func newBidRuntime(newBid *types.Bid, validatorCommission uint64) (*BidRuntime, error) {
-	// check the block reward and validator reward of the newBid
-	expectedBlockReward := newBid.GasFee
-	expectedValidatorReward := new(big.Int).Mul(expectedBlockReward, big.NewInt(int64(validatorCommission)))
-	expectedValidatorReward.Div(expectedValidatorReward, big.NewInt(10000))
-	expectedValidatorReward.Sub(expectedValidatorReward, newBid.BuilderFee)
-
-	if expectedValidatorReward.Cmp(big.NewInt(0)) < 0 {
-		// damage self profit, ignore
-		log.Debug("BidSimulator: invalid bid, validator reward is less than 0, ignore",
-			"builder", newBid.Builder, "bidHash", newBid.Hash().Hex())
-		return nil, fmt.Errorf("validator reward is less than 0, value: %s, commissionConfig: %d", expectedValidatorReward, validatorCommission)
+func newBidRuntime(bid *types.Bid) *BidRuntime {
+	return &BidRuntime{
+		bid:         bid,
+		directBribe: big.NewInt(0),
+		finished:    make(chan struct{}),
 	}
+}
 
-	bidRuntime := &BidRuntime{
-		bid:                     newBid,
-		expectedBlockReward:     expectedBlockReward,
-		expectedValidatorReward: expectedValidatorReward,
-		packedBlockReward:       big.NewInt(0),
-		packedValidatorReward:   big.NewInt(0),
-		finished:                make(chan struct{}),
+func (r *BidRuntime) updatePackReward(isRawBid bool) {
+	r.packedBlockRewardPreBEP95Final = r.env.state.GetBalance(consensus.SystemAddress)
+	if isRawBid {
+		r.packedBlockRewardPreBEP95Builder = r.packedBlockRewardPreBEP95Final.Clone()
 	}
-
-	return bidRuntime, nil
 }
 
 func (r *BidRuntime) validReward() bool {
-	return r.packedBlockReward.Cmp(r.expectedBlockReward) >= 0 &&
-		r.packedValidatorReward.Cmp(r.expectedValidatorReward) >= 0
+	return r.directBribeBNB().Cmp(r.bid.NontaxableFee) >= 0 &&
+		r.packedBlockRewardPreBEP95Builder.CmpBig(r.bid.GasFee) >= 0
 }
 
-func (r *BidRuntime) isExpectedBetterThan(other *BidRuntime) bool {
-	return r.expectedBlockReward.Cmp(other.expectedBlockReward) >= 0 &&
-		r.expectedValidatorReward.Cmp(other.expectedValidatorReward) >= 0
+func (r *BidRuntime) expectedRewardFromBuilder() *big.Int {
+	return new(big.Int).Add(calcRewardAfterBEP95(r.bid.GasFee), r.bid.NontaxableFee)
 }
 
-// packReward calculates packedBlockReward and packedValidatorReward
-func (r *BidRuntime) packReward(validatorCommission uint64) {
-	r.packedBlockReward = r.env.state.GetBalance(consensus.SystemAddress).ToBig()
-	r.packedValidatorReward = new(big.Int).Mul(r.packedBlockReward, big.NewInt(int64(validatorCommission)))
-	r.packedValidatorReward.Div(r.packedValidatorReward, big.NewInt(10000))
-	r.packedValidatorReward.Sub(r.packedValidatorReward, r.bid.BuilderFee)
+func (r *BidRuntime) isExpectedBetterThanSimulatingBid(simBid *BidRuntime) bool {
+	return r.expectedRewardFromBuilder().Cmp(simBid.expectedRewardFromBuilder()) > 0
 }
 
-func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *params.ChainConfig, tx *types.Transaction, unRevertible bool) error {
+func (r *BidRuntime) isExpectedBetterThanBestBid(bestBid *BidRuntime) bool {
+	return r.expectedRewardFromBuilder().Cmp(bestBid.totalRewardFromBuilder()) > 0
+}
+
+func (r *BidRuntime) checkValidatorBribe(selfBribe common.Address, tx *types.Transaction, receipt *types.Receipt) {
+	if to := tx.To(); to != nil && *to == selfBribe &&
+		receipt.Status == types.ReceiptStatusSuccessful &&
+		tx.Value() != nil && tx.Value().Cmp(common.Big0) > 0 {
+
+		r.directBribe.Add(r.directBribe, tx.Value())
+	}
+}
+
+func (r *BidRuntime) directBribeBNB() *big.Int {
+	return new(big.Int).Set(r.directBribe)
+}
+
+func (r *BidRuntime) totalRewardFromBuilder() *big.Int {
+	return new(big.Int).Add(calcRewardAfterBEP95(r.packedBlockRewardPreBEP95Builder.ToBig()), r.directBribeBNB())
+}
+
+func (r *BidRuntime) blockReward() *big.Int {
+	return calcRewardAfterBEP95(r.packedBlockRewardPreBEP95Final.ToBig())
+}
+
+func (r *BidRuntime) totalReward() *big.Int {
+	return new(big.Int).Add(r.blockReward(), r.directBribeBNB())
+}
+
+func calcRewardAfterBEP95(preBEP95 *big.Int) *big.Int {
+	return new(big.Int).Div(
+		new(big.Int).Mul(preBEP95, big.NewInt(9)),
+		big.NewInt(10),
+	)
+}
+
+func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *params.ChainConfig, tx *types.Transaction, unRevertible bool) (*types.Receipt, error) {
 	var (
 		env = r.env
 		sc  *types.BlobSidecar
@@ -834,23 +855,23 @@ func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *para
 	if tx.Type() == types.BlobTxType {
 		sc = types.NewBlobSidecarFromTx(tx)
 		if sc == nil {
-			return errors.New("blob transaction without blobs in miner")
+			return nil, errors.New("blob transaction without blobs in miner")
 		}
 		// Checking against blob gas limit: It's kind of ugly to perform this check here, but there
 		// isn't really a better place right now. The blob gas limit is checked at block validation time
 		// and not during execution. This means core.ApplyTransaction will not return an error if the
 		// tx has too many blobs. So we have to explicitly check it here.
 		if (env.blobs+len(sc.Blobs))*params.BlobTxBlobGasPerBlob > params.MaxBlobGasPerBlock {
-			return errors.New("max data blobs reached")
+			return nil, errors.New("max data blobs reached")
 		}
 	}
 
 	receipt, err := core.ApplyTransaction(chainConfig, chain, &env.coinbase, env.gasPool, env.state, env.header, tx,
 		&env.header.GasUsed, *chain.GetVMConfig(), core.NewReceiptBloomGenerator())
 	if err != nil {
-		return err
+		return nil, err
 	} else if unRevertible && receipt.Status == types.ReceiptStatusFailed {
-		return errors.New("no revertible transaction failed")
+		return nil, errors.New("no revertible transaction failed")
 	}
 
 	if tx.Type() == types.BlobTxType {
@@ -868,7 +889,7 @@ func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *para
 	r.env.tcount++
 	r.env.size += uint32(tx.Size())
 
-	return nil
+	return receipt, nil
 }
 
 func weiToEtherStringF6(wei *big.Int) string {
