@@ -57,6 +57,9 @@ func (b *BidArgs) ToBid(builder common.Address, signer Signer) (*Bid, error) {
 		if err != nil {
 			return nil, err
 		}
+		if payBidTx.Value().Cmp(common.Big0) > 0 {
+			return nil, fmt.Errorf("bid payback is not allowed")
+		}
 
 		txs = append(txs, payBidTx)
 	}
