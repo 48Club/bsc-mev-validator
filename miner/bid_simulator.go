@@ -621,45 +621,6 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		}
 	}
 
-	// check if bid gas price is lower than min gas price
-	{
-		bidGasUsed := uint64(0)
-		bidGasFee := big.NewInt(0)
-
-		for i, receipt := range bidRuntime.env.receipts {
-			tx := bidRuntime.env.txs[i]
-			if !b.txpool.Has(tx.Hash()) {
-				bidGasUsed += receipt.GasUsed
-				effectiveTip, er := tx.EffectiveGasTip(bidRuntime.env.header.BaseFee)
-				if er != nil {
-					err = errors.New("failed to calculate effective tip")
-					return
-				}
-
-				if bidRuntime.env.header.BaseFee != nil {
-					effectiveTip.Add(effectiveTip, bidRuntime.env.header.BaseFee)
-				}
-
-				gasFee := new(big.Int).Mul(effectiveTip, new(big.Int).SetUint64(receipt.GasUsed))
-				bidGasFee.Add(bidGasFee, gasFee)
-
-				if tx.Type() == types.BlobTxType {
-					blobFee := new(big.Int).Mul(receipt.BlobGasPrice, new(big.Int).SetUint64(receipt.BlobGasUsed))
-					bidGasFee.Add(bidGasFee, blobFee)
-				}
-			}
-		}
-
-		// if bid txs are all from mempool, do not check gas price
-		if bidGasUsed != 0 {
-			bidGasPrice := new(big.Int).Div(bidGasFee, new(big.Int).SetUint64(bidGasUsed))
-			if bidGasPrice.Cmp(b.minGasPrice) < 0 {
-				err = fmt.Errorf("bid gas price is lower than min gas price, bid:%v, min:%v", bidGasPrice, b.minGasPrice)
-				return
-			}
-		}
-	}
-
 	// if enable greedy merge, fill bid env with transactions from mempool
 	if b.config.GreedyMergeTx {
 		delay := b.engine.Delay(b.chain, bidRuntime.env.header, &b.delayLeftOver)
