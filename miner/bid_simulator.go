@@ -799,8 +799,8 @@ func (r *BidRuntime) totalReward() *big.Int {
 
 func calcRewardAfterBEP95(preBEP95 *big.Int) *big.Int {
 	return new(big.Int).Div(
-		new(big.Int).Mul(preBEP95, big.NewInt(9)),
-		big.NewInt(10),
+		new(big.Int).Mul(preBEP95, big.NewInt(99)),
+		big.NewInt(100),
 	)
 }
 
