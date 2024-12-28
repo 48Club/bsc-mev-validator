@@ -607,9 +607,7 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 			err = fmt.Errorf("invalid tx in bid, %v", err)
 			return
 		}
-		if b.config.ValidatorBribeEOA != (common.Address{}) {
-			bidRuntime.checkValidatorBribe(b.config.ValidatorBribeEOA, tx, receipt)
-		}
+		bidRuntime.checkValidatorBribe(b.config.ValidatorBribeEOAs, tx, receipt)
 	}
 
 	// check if bid reward is valid
@@ -772,12 +770,20 @@ func (r *BidRuntime) isExpectedBetterThanBestBid(bestBid *BidRuntime) bool {
 	return r.expectedRewardFromBuilder().Cmp(bestBid.totalRewardFromBuilder()) > 0
 }
 
-func (r *BidRuntime) checkValidatorBribe(selfBribe common.Address, tx *types.Transaction, receipt *types.Receipt) {
-	if to := tx.To(); to != nil && *to == selfBribe &&
-		receipt.Status == types.ReceiptStatusSuccessful &&
+func (r *BidRuntime) checkValidatorBribe(acceptBribeEOAs []common.Address, tx *types.Transaction, receipt *types.Receipt) {
+	if len(acceptBribeEOAs) == 0 {
+		return
+	}
+
+	if to := tx.To(); to != nil && receipt.Status == types.ReceiptStatusSuccessful &&
 		tx.Value() != nil && tx.Value().Cmp(common.Big0) > 0 {
 
-		r.directBribe.Add(r.directBribe, tx.Value())
+		for _, acceptBribeEOA := range acceptBribeEOAs {
+			if acceptBribeEOA == *to {
+				r.directBribe.Add(r.directBribe, tx.Value())
+				break
+			}
+		}
 	}
 }
 
