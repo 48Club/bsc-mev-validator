@@ -1429,34 +1429,17 @@ LOOP:
 
 		bestBid := w.bidFetcher.GetBestBid(bestWork.header.ParentHash)
 
-		if bestBid != nil {
-			log.Debug("BidSimulator: final compare", "block", bestWork.header.Number.Uint64(),
-				"localBlockReward", bestReward.String(),
-				"bidBlockReward", bestBid.packedBlockReward.String())
-		}
+		if bestBid != nil && calcRewardAfterBEP95(bestReward.ToBig()).Cmp(bestBid.totalReward()) < 0 {
+			bestWork = bestBid.env
+			from = bestBid.bid.Builder
 
-		if bestBid != nil && bestReward.CmpBig(bestBid.packedBlockReward) < 0 {
-			// localValidatorReward is the reward for the validator self by the local block.
-			localValidatorReward := new(uint256.Int).Mul(bestReward, uint256.NewInt(w.config.Mev.ValidatorCommission))
-			localValidatorReward.Div(localValidatorReward, uint256.NewInt(10000))
-
-			log.Debug("BidSimulator: final compare", "block", bestWork.header.Number.Uint64(),
-				"localValidatorReward", localValidatorReward.String(),
-				"bidValidatorReward", bestBid.packedValidatorReward.String())
-
-			// blockReward(benefits delegators) and validatorReward(benefits the validator) are both optimal
-			if localValidatorReward.CmpBig(bestBid.packedValidatorReward) < 0 {
-				bestWork = bestBid.env
-				from = bestBid.bid.Builder
-
-				log.Info("[BUILDER BLOCK]",
-					"block", bestWork.header.Number.Uint64(),
-					"builder", from,
-					"blockReward", weiToEtherStringF6(bestBid.packedBlockReward),
-					"validatorReward", weiToEtherStringF6(bestBid.packedValidatorReward),
-					"bid", bestBid.bid.Hash().TerminalString(),
-				)
-			}
+			log.Info(" 🔥 bid win",
+				"bn", bestWork.header.Number.Uint64(),
+				"from", from,
+				"blockReward", weiToEtherStringF6(bestBid.blockReward()),
+				"totalReward", weiToEtherStringF6(bestBid.totalReward()),
+				"builderCtb", weiToEtherStringF6(bestBid.totalRewardFromBuilder()),
+			)
 		}
 	}
 

@@ -25,6 +25,9 @@ type BidArgs struct {
 	// PayBidTx is a payment tx to builder from sentry, which is optional
 	PayBidTx        hexutil.Bytes `json:"payBidTx"`
 	PayBidTxGasUsed uint64        `json:"payBidTxGasUsed"`
+
+	// 48Club specific
+	NontaxableFee *big.Int `json:"nontaxableFee"`
 }
 
 func (b *BidArgs) EcrecoverSender() (common.Address, error) {
@@ -53,9 +56,18 @@ func (b *BidArgs) ToBid(builder common.Address, signer Signer) (*Bid, error) {
 		err = payBidTx.UnmarshalBinary(b.PayBidTx)
 		if err != nil {
 			return nil, err
+		} else if payBidTx.Value().Cmp(common.Big0) > 0 {
+			return nil, fmt.Errorf("bid payback value is capped at 0")
 		}
 
 		txs = append(txs, payBidTx)
+	}
+
+	var nontaxableFee *big.Int
+	if b.NontaxableFee != nil {
+		nontaxableFee = new(big.Int).Set(b.NontaxableFee)
+	} else {
+		nontaxableFee = big.NewInt(0)
 	}
 
 	bid := &Bid{
@@ -68,6 +80,9 @@ func (b *BidArgs) ToBid(builder common.Address, signer Signer) (*Bid, error) {
 		GasFee:       b.RawBid.GasFee,
 		BuilderFee:   b.RawBid.BuilderFee,
 		rawBid:       *b.RawBid,
+
+		// 48Club specific
+		NontaxableFee: nontaxableFee,
 	}
 
 	if bid.BuilderFee == nil {
@@ -174,6 +189,9 @@ type Bid struct {
 	BuilderFee   *big.Int
 
 	rawBid RawBid
+
+	// 48 special
+	NontaxableFee *big.Int
 }
 
 // Hash returns the bid hash.
@@ -195,5 +213,6 @@ type MevParams struct {
 	GasCeil               uint64
 	GasPrice              *big.Int // Minimum avg gas price for bid block
 	BuilderFeeCeil        *big.Int
+	ValidatorBidFeeEOA    common.Address
 	Version               string
 }
