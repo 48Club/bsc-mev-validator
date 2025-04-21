@@ -1,4 +1,47 @@
 # Changelog
+## v1.5.11
+### FEATURE
+[\#3008](https://github.com/bnb-chain/bsc/pull/3008) params: add MaxwellTime
+[\#3025](https://github.com/bnb-chain/bsc/pull/3025) config.toml: default value of [Eth.Miner] and [Eth.Miner.Mev]
+[\#3026](https://github.com/bnb-chain/bsc/pull/3026) mev: include MaxBidsPerBuilder in MevParams
+[\#3027](https://github.com/bnb-chain/bsc/pull/3027) mev: update two default mev paramater for 1.5s block interval
+
+### BUGFIX
+[\#3007](https://github.com/bnb-chain/bsc/pull/3007) metrics: fix panic for cocurrently accessing label
+
+### IMPROVEMENT
+[\#3006](https://github.com/bnb-chain/bsc/pull/3006) jsutil: update getKeyParameters
+[\#3018](https://github.com/bnb-chain/bsc/pull/3018) nancy: update nancy ignore
+[\#3021](https://github.com/bnb-chain/bsc/pull/3021) chore: remove duplicate package imports
+
+## v1.5.10
+### FEATURE
+[\#3015](https://github.com/bnb-chain/bsc/pull/3015) config: update BSC Mainnet hardfork time: Lorentz
+
+### BUGFIX
+NA
+
+### IMPROVEMENT
+[\#2985](https://github.com/bnb-chain/bsc/pull/2985) core: clearup pascal&prague testflag and rialto code
+
+## v1.5.9
+### FEATURE
+[\#2932](https://github.com/bnb-chain/bsc/pull/2932) BEP-520: Short Block Interval Phase One: 1.5 seconds
+[\#2991](https://github.com/bnb-chain/bsc/pull/2991) config: update BSC Testnet hardfork time: Lorentz
+
+### BUGFIX
+[\#2990](https://github.com/bnb-chain/bsc/pull/2990) core/state: fix concurrent map read and write for stateUpdate.accounts
+
+### IMPROVEMENT
+[\#2933](https://github.com/bnb-chain/bsc/pull/2933) metrics: add more peer, block/vote metrics
+[\#2938](https://github.com/bnb-chain/bsc/pull/2938) cmd/geth: add example for geth bls account generate-proof
+[\#2949](https://github.com/bnb-chain/bsc/pull/2949) metrics: add more block/vote stats;
+[\#2948](https://github.com/bnb-chain/bsc/pull/2948) go.mod: update crypto to solve CVE-2025-22869
+[\#2960](https://github.com/bnb-chain/bsc/pull/2960) pool: debug log instead of warn
+[\#2961](https://github.com/bnb-chain/bsc/pull/2961) metric: add more block monitor metrics;
+[\#2992](https://github.com/bnb-chain/bsc/pull/2992) core/systemcontracts: update url for lorentz hardfork
+[\#2993](https://github.com/bnb-chain/bsc/pull/2993) cmd/jsutils: add tool GetMevStatus
+
 ## v1.5.8
 ### FEATURE
 * [\#2955](https://github.com/bnb-chain/bsc/pull/2955) pbs: enable GreedyMergeTx by default
@@ -110,7 +153,7 @@ _in bsc, this feature only enabled with multi-database_
 
 #### New EIPs
 [core/vm: enable bls-precompiles for Prague (](https://github.com/ethereum/go-ethereum/commit/823719b9e1b72174cd8245ae9e6f6f7d7072a8d6)[#29552](https://github.com/ethereum/go-ethereum/pull/29552)[)](https://github.com/ethereum/go-ethereum/commit/823719b9e1b72174cd8245ae9e6f6f7d7072a8d6)
-[EIP-2935: Serve historical block hashes from state](https://eips.ethereum.org/EIPS/eip-2935) ([#29465](https://github.com/ethereum/go-ethereum/pull/29465))
+[EIP-2935: Serve historical block hashes from state](https://eips.ethereum.org/EIPS/eip-2935) ([#29465](https://github.com/ethereum/go-ethereum/pull/29465))
 
 #### Clear Up
 [eth, eth/downloader: remove references to LightChain, LightSync (#29711)](https://github.com/ethereum/go-ethereum/pull/29711)

@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/systemcontracts/gibbs"
 	haberFix "github.com/ethereum/go-ethereum/core/systemcontracts/haber_fix"
 	"github.com/ethereum/go-ethereum/core/systemcontracts/kepler"
+	"github.com/ethereum/go-ethereum/core/systemcontracts/lorentz"
 	"github.com/ethereum/go-ethereum/core/systemcontracts/luban"
 	"github.com/ethereum/go-ethereum/core/systemcontracts/mirror"
 	"github.com/ethereum/go-ethereum/core/systemcontracts/moran"
@@ -86,6 +87,8 @@ var (
 	bohrUpgrade = make(map[string]*Upgrade)
 
 	pascalUpgrade = make(map[string]*Upgrade)
+
+	lorentzUpgrade = make(map[string]*Upgrade)
 )
 
 func init() {
@@ -959,93 +962,35 @@ func init() {
 		},
 	}
 
-	pascalUpgrade[rialtoNet] = &Upgrade{
-		UpgradeName: "pascal",
+	lorentzUpgrade[mainNet] = &Upgrade{
+		UpgradeName: "lorentz",
 		Configs: []*UpgradeConfig{
 			{
 				ContractAddr: common.HexToAddress(ValidatorContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoValidatorContract,
+				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/44ebc6c17a00bd24db3240141a78091528dcebbb",
+				Code:         lorentz.MainnetValidatorContract,
 			},
+		},
+	}
+
+	lorentzUpgrade[chapelNet] = &Upgrade{
+		UpgradeName: "lorentz",
+		Configs: []*UpgradeConfig{
 			{
-				ContractAddr: common.HexToAddress(SlashContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoSlashContract,
+				ContractAddr: common.HexToAddress(ValidatorContract),
+				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/44ebc6c17a00bd24db3240141a78091528dcebbb",
+				Code:         lorentz.ChapelValidatorContract,
 			},
+		},
+	}
+
+	lorentzUpgrade[rialtoNet] = &Upgrade{
+		UpgradeName: "lorentz",
+		Configs: []*UpgradeConfig{
 			{
-				ContractAddr: common.HexToAddress(SystemRewardContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoSystemRewardContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(LightClientContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoLightClientContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(TokenHubContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoTokenHubContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(RelayerIncentivizeContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoRelayerIncentivizeContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(RelayerHubContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoRelayerHubContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(GovHubContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoGovHubContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(TokenManagerContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoTokenManagerContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(CrossChainContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoCrossChainContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(StakingContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoStakingContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(StakeHubContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoStakeHubContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(StakeCreditContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoStakeCreditContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(GovernorContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoGovernorContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(GovTokenContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoGovTokenContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(TimelockContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoTimelockContract,
-			},
-			{
-				ContractAddr: common.HexToAddress(TokenRecoverPortalContract),
-				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/020c0459e37d1f9d635c1cff86dd1099ab1383fa",
-				Code:         pascal.RialtoTokenRecoverPortalContract,
+				ContractAddr: common.HexToAddress(ValidatorContract),
+				CommitUrl:    "https://github.com/bnb-chain/bsc-genesis-contract/commit/44ebc6c17a00bd24db3240141a78091528dcebbb",
+				Code:         lorentz.RialtoValidatorContract,
 			},
 		},
 	}
@@ -1154,6 +1099,10 @@ func upgradeBuildInSystemContract(config *params.ChainConfig, blockNumber *big.I
 
 	if config.IsOnPascal(blockNumber, lastBlockTime, blockTime) {
 		applySystemContractUpgrade(pascalUpgrade[network], blockNumber, statedb, logger)
+	}
+
+	if config.IsOnLorentz(blockNumber, lastBlockTime, blockTime) {
+		applySystemContractUpgrade(lorentzUpgrade[network], blockNumber, statedb, logger)
 	}
 
 	/*

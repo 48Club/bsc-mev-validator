@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/bidutil"
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 	"github.com/ethereum/go-ethereum/consensus/parlia"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -29,11 +30,6 @@ import (
 	"github.com/ethereum/go-ethereum/miner/minerconfig"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
-)
-
-const (
-	// maxBidPerBuilderPerBlock is the max bid number per builder
-	maxBidPerBuilderPerBlock = 3
 )
 
 var (
@@ -118,11 +114,13 @@ type bidSimulator struct {
 
 	simBidMu      sync.RWMutex
 	simulatingBid map[common.Hash]*BidRuntime // prevBlockHash -> bidRuntime, in the process of simulation
+
+	maxBidsPerBuilder uint32 // Maximum number of bids allowed per builder per block
 }
 
 func newBidSimulator(
 	config *minerconfig.MevConfig,
-	delayLeftOver time.Duration,
+	delayLeftOver *time.Duration,
 	minGasPrice *big.Int,
 	eth Backend,
 	chainConfig *params.ChainConfig,
@@ -131,7 +129,6 @@ func newBidSimulator(
 ) *bidSimulator {
 	b := &bidSimulator{
 		config:        config,
-		delayLeftOver: delayLeftOver,
 		minGasPrice:   minGasPrice,
 		chain:         eth.BlockChain(),
 		txpool:        eth.TxPool(),
@@ -147,6 +144,12 @@ func newBidSimulator(
 		bestBid:       make(map[common.Hash]*BidRuntime),
 		bestBidToRun:  make(map[common.Hash]*types.Bid),
 		simulatingBid: make(map[common.Hash]*BidRuntime),
+	}
+	if delayLeftOver != nil {
+		b.delayLeftOver = *delayLeftOver
+	}
+	if config.MaxBidsPerBuilder != nil {
+		b.maxBidsPerBuilder = *config.MaxBidsPerBuilder
 	}
 
 	b.chainHeadSub = b.chain.SubscribeChainHeadEvent(b.chainHeadCh)
@@ -355,8 +358,8 @@ func (b *bidSimulator) canBeInterrupted(targetTime uint64) bool {
 		// invalid targetTime, disable the interrupt check
 		return true
 	}
-	left := time.Until(time.Unix(int64(targetTime), 0))
-	return left >= b.config.NoInterruptLeftOver
+	left := time.Until(time.UnixMilli(int64(targetTime)))
+	return left >= *b.config.NoInterruptLeftOver
 }
 
 func (b *bidSimulator) newBidLoop() {
@@ -420,12 +423,9 @@ func (b *bidSimulator) newBidLoop() {
 				// but if there is a simulating bid and with a short time left, don't interrupt it
 				if simulatingBid := b.GetSimulatingBid(newBid.bid.ParentHash); simulatingBid != nil {
 					parentHeader := b.chain.GetHeaderByHash(newBid.bid.ParentHash)
-					var blockTime uint64 = 0
-					if parentHeader != nil {
-						const blockInterval uint64 = 3 // todo: to improve this hard code value
-						blockTime = parentHeader.Time + blockInterval
-					}
-					left := time.Until(time.Unix(int64(blockTime), 0))
+					blockInterval := b.getBlockInterval(parentHeader)
+					blockTime := parentHeader.MilliTimestamp() + blockInterval
+					left := time.Until(time.UnixMilli(int64(blockTime)))
 					if b.canBeInterrupted(blockTime) {
 						log.Debug("simulate in progress, interrupt",
 							"blockTime", blockTime, "left", left.Milliseconds(),
@@ -466,9 +466,24 @@ func (b *bidSimulator) newBidLoop() {
 	}
 }
 
+// get block interval for current block by using parent header
+func (b *bidSimulator) getBlockInterval(parentHeader *types.Header) uint64 {
+	if parentHeader == nil {
+		return 1500 // lorentzBlockInterval
+	}
+	parlia, _ := b.engine.(*parlia.Parlia)
+	// only `Number` and `ParentHash` are used when `BlockInterval`
+	tmpHeader := &types.Header{ParentHash: parentHeader.Hash(), Number: new(big.Int).Add(parentHeader.Number, common.Big1)}
+	blockInterval, err := parlia.BlockInterval(b.chain, tmpHeader)
+	if err != nil {
+		log.Debug("failed to get BlockInterval when bidBetterBefore")
+	}
+	return blockInterval
+}
+
 func (b *bidSimulator) bidBetterBefore(parentHash common.Hash) time.Time {
 	parentHeader := b.chain.GetHeaderByHash(parentHash)
-	return bidutil.BidBetterBefore(parentHeader, b.chainConfig.Parlia.Period, b.delayLeftOver, b.config.BidSimulationLeftOver)
+	return bidutil.BidBetterBefore(parentHeader, b.getBlockInterval(parentHeader), b.delayLeftOver, *b.config.BidSimulationLeftOver)
 }
 
 func (b *bidSimulator) clearLoop() {
@@ -555,8 +570,8 @@ func (b *bidSimulator) CheckPending(blockNumber uint64, builder common.Address, 
 		return errors.New("bid already exists")
 	}
 
-	if len(b.pending[blockNumber][builder]) >= maxBidPerBuilderPerBlock {
-		return errors.New("too many bids")
+	if len(b.pending[blockNumber][builder]) >= int(b.maxBidsPerBuilder) {
+		return fmt.Errorf("too many bids: exceeded limit of %d bids per builder per block", b.maxBidsPerBuilder)
 	}
 
 	return nil
@@ -723,7 +738,7 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 	}
 
 	// if enable greedy merge, fill bid env with transactions from mempool
-	if b.config.GreedyMergeTx {
+	if *b.config.GreedyMergeTx {
 		endingBidsExtra := 20 * time.Millisecond // Add a buffer to ensure ending bids before `delayLeftOver`
 		minTimeLeftForEndingBids := b.delayLeftOver + endingBidsExtra
 		delay := b.engine.Delay(b.chain, bidRuntime.env.header, &minTimeLeftForEndingBids)
@@ -938,7 +953,7 @@ func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *para
 		// isn't really a better place right now. The blob gas limit is checked at block validation time
 		// and not during execution. This means core.ApplyTransaction will not return an error if the
 		// tx has too many blobs. So we have to explicitly check it here.
-		if (env.blobs + len(sc.Blobs)) > params.MaxBlobsPerBlockForBSC {
+		if (env.blobs + len(sc.Blobs)) > eip4844.MaxBlobsPerBlock(chainConfig, r.env.header.Time) {
 			return nil, errors.New("max data blobs reached")
 		}
 	}
