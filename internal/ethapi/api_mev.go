@@ -1,8 +1,12 @@
 package ethapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	jsoniter "github.com/json-iterator/go"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -77,6 +81,21 @@ func (m *MevAPI) SendBid(ctx context.Context, args types.BidArgs) (common.Hash, 
 	}
 
 	return m.b.SendBid(ctx, &args)
+}
+
+func (m *MevAPI) GzippedBid(ctx context.Context, gzippedData hexutil.Bytes) (common.Hash, error) {
+	var args types.BidArgs
+	gz, err := gzip.NewReader(bytes.NewReader(gzippedData))
+	if err != nil {
+		return common.Hash{}, err
+	}
+	defer gz.Close()
+
+	if err := jsoniter.NewDecoder(gz).Decode(&args); err != nil {
+		return common.Hash{}, err
+	}
+
+	return m.SendBid(ctx, args)
 }
 
 func (m *MevAPI) BestBidGasFee(_ context.Context, parentHash common.Hash) *big.Int {
