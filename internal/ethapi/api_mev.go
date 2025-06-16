@@ -1,13 +1,15 @@
 package ethapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
-	"math/big"
-
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
+	jsoniter "github.com/json-iterator/go"
 )
 
 // MevAPI implements the interfaces that defined in the BEP-322.
@@ -86,8 +88,19 @@ func (m *MevAPI) SendBid(ctx context.Context, args types.BidArgs) (common.Hash, 
 	return m.b.SendBid(ctx, &args)
 }
 
-func (m *MevAPI) BestBidGasFee(_ context.Context, parentHash common.Hash) *big.Int {
-	return m.b.BestBidGasFee(parentHash)
+func (m *MevAPI) GzippedBid(ctx context.Context, gzippedData hexutil.Bytes) (common.Hash, error) {
+	var args types.BidArgs
+	gz, err := gzip.NewReader(bytes.NewReader(gzippedData))
+	if err != nil {
+		return common.Hash{}, err
+	}
+	defer gz.Close()
+
+	if err := jsoniter.NewDecoder(gz).Decode(&args); err != nil {
+		return common.Hash{}, err
+	}
+
+	return m.SendBid(ctx, args)
 }
 
 func (m *MevAPI) Params() *types.MevParams {

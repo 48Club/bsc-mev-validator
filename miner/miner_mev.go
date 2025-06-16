@@ -86,7 +86,7 @@ func (miner *Miner) BestPackedBlockReward(parentHash common.Hash) *big.Int {
 		return big.NewInt(0)
 	}
 
-	return bidRuntime.packedBlockReward
+	return bidRuntime.totalRewardFromBuilder()
 }
 
 func (miner *Miner) MevParams() *types.MevParams {
@@ -103,6 +103,7 @@ func (miner *Miner) MevParams() *types.MevParams {
 		MaxBidsPerBuilder:     *miner.worker.config.Mev.MaxBidsPerBuilder,
 		GasCeil:               miner.worker.config.GasCeil,
 		GasPrice:              miner.worker.config.GasPrice,
+		ValidatorBidFeeEOA:    miner.worker.config.Mev.ValidatorBidFeeEOA[0],
 		BuilderFeeCeil:        builderFeeCeil,
 		Version:               version.Semantic,
 	}
