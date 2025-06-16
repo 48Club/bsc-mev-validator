@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/holiman/uint256"
 	"math/big"
 	"net"
 	"net/http"
@@ -12,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/holiman/uint256"
 
 	mapset "github.com/deckarep/golang-set/v2"
 
@@ -895,7 +896,6 @@ func (r *BidRuntime) updatePackReward(isRawBid bool) {
 	r.packedBlockRewardPreBEP95Final = r.env.state.GetBalance(consensus.SystemAddress)
 	if isRawBid {
 		r.packedBlockRewardPreBEP95Builder = r.packedBlockRewardPreBEP95Final.Clone()
-
 	}
 }
 
@@ -910,10 +910,6 @@ func (r *BidRuntime) expectedRewardFromBuilder() *big.Int {
 
 func (r *BidRuntime) isExpectedBetterThanSimulatingBid(simBid *BidRuntime) bool {
 	return r.expectedRewardFromBuilder().Cmp(simBid.expectedRewardFromBuilder()) > 0
-}
-
-func (r *BidRuntime) isExpectedBetterThanBestBid(bestBid *BidRuntime) bool {
-	return r.expectedRewardFromBuilder().Cmp(bestBid.totalRewardFromBuilder()) > 0
 }
 
 func (r *BidRuntime) checkValidatorBribe(acceptBribeEOAs []common.Address, tx *types.Transaction, receipt *types.Receipt) {
@@ -934,17 +930,14 @@ func (r *BidRuntime) checkValidatorBribe(acceptBribeEOAs []common.Address, tx *t
 
 func (r *BidRuntime) directBribeBNB() *big.Int {
 	return new(big.Int).Set(r.directBribe)
-
 }
 
 func (r *BidRuntime) totalRewardFromBuilder() *big.Int {
 	return new(big.Int).Add(calcRewardAfterBEP95(r.packedBlockRewardPreBEP95Builder.ToBig()), r.directBribeBNB())
-
 }
 
 func (r *BidRuntime) blockReward() *big.Int {
 	return calcRewardAfterBEP95(r.packedBlockRewardPreBEP95Final.ToBig())
-
 }
 
 func (r *BidRuntime) totalReward() *big.Int {

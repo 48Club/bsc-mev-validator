@@ -73,7 +73,6 @@ const (
 
 var (
 	bidExistGauge        = metrics.NewRegisteredGauge("worker/bidExist", nil)
-	bidWinGauge          = metrics.NewRegisteredGauge("worker/bidWin", nil)
 	inturnBlocksGauge    = metrics.NewRegisteredGauge("worker/inturnBlocks", nil)
 	bestBidGasUsedGauge  = metrics.NewRegisteredGauge("worker/bestBidGasUsed", nil)  // MGas
 	bestWorkGasUsedGauge = metrics.NewRegisteredGauge("worker/bestWorkGasUsed", nil) // MGas
