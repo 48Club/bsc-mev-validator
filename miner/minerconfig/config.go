@@ -99,6 +99,9 @@ type MevConfig struct {
 	BidSimulationLeftOver *time.Duration  `toml:",omitempty"`
 	NoInterruptLeftOver   *time.Duration  `toml:",omitempty"`
 	MaxBidsPerBuilder     *uint32         `toml:",omitempty"` // Maximum number of bids allowed per builder per block
+
+	// mev-validator specific
+	ValidatorBidFeeEOA []common.Address `toml:",omitempty"`
 }
 
 var DefaultMevConfig = MevConfig{

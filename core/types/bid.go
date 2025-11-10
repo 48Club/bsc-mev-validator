@@ -7,6 +7,7 @@ import (
 	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
+	"github.com/holiman/uint256"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -25,6 +26,9 @@ type BidArgs struct {
 	// PayBidTx is a payment tx to builder from sentry, which is optional
 	PayBidTx        hexutil.Bytes `json:"payBidTx"`
 	PayBidTxGasUsed uint64        `json:"payBidTxGasUsed"`
+
+	// mev-validator specific
+	NontaxableFee *big.Int `json:"nontaxableFee"`
 }
 
 func (b *BidArgs) EcrecoverSender() (common.Address, error) {
@@ -53,9 +57,18 @@ func (b *BidArgs) ToBid(builder common.Address, signer Signer) (*Bid, error) {
 		err = payBidTx.UnmarshalBinary(b.PayBidTx)
 		if err != nil {
 			return nil, err
+		} else if payBidTx.Value().Cmp(common.Big0) > 0 {
+			return nil, fmt.Errorf("bid payback value is capped at 0")
 		}
 
 		txs = append(txs, payBidTx)
+	}
+
+	var nontaxableFee *uint256.Int
+	if b.NontaxableFee != nil {
+		nontaxableFee = uint256.MustFromBig(b.NontaxableFee)
+	} else {
+		nontaxableFee = uint256.NewInt(0)
 	}
 
 	bid := &Bid{
@@ -68,6 +81,9 @@ func (b *BidArgs) ToBid(builder common.Address, signer Signer) (*Bid, error) {
 		GasFee:       b.RawBid.GasFee,
 		BuilderFee:   b.RawBid.BuilderFee,
 		rawBid:       *b.RawBid,
+
+		// mev-validator specific
+		NontaxableFee: nontaxableFee,
 	}
 
 	if bid.BuilderFee == nil {
@@ -175,6 +191,9 @@ type Bid struct {
 	committed    bool // whether the bid has been committed to simulate or not
 
 	rawBid RawBid
+
+	// mev-validator specific
+	NontaxableFee *uint256.Int
 }
 
 func (b *Bid) Commit() {

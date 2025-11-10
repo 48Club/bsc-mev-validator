@@ -1392,33 +1392,20 @@ LOOP:
 			bestWorkGasUsedGauge.Update(int64(bestWork.header.GasUsed) / 1_000_000)
 
 			log.Debug("BidSimulator: final compare", "block", bestWork.header.Number.Uint64(),
-				"localBlockReward", bestReward.String(),
-				"bidBlockReward", bestBid.packedBlockReward.String())
+				"localBlockReward", calcRewardAfterBEP95(bestReward).String(),
+				"bidBlockReward", bestBid.blockReward().String())
 		}
 
-		if bestBid != nil && bestReward.CmpBig(bestBid.packedBlockReward) < 0 {
-			// localValidatorReward is the reward for the validator self by the local block.
-			localValidatorReward := new(uint256.Int).Mul(bestReward, uint256.NewInt(*w.config.Mev.ValidatorCommission))
-			localValidatorReward.Div(localValidatorReward, uint256.NewInt(10000))
+		if bestBid != nil && calcRewardAfterBEP95(bestReward).Cmp(bestBid.blockReward()) < 0 {
+			bestWork = bestBid.env
+			bidWinGauge.Inc(1)
 
-			log.Debug("BidSimulator: final compare", "block", bestWork.header.Number.Uint64(),
-				"localValidatorReward", localValidatorReward.String(),
-				"bidValidatorReward", bestBid.packedValidatorReward.String())
-
-			// blockReward(benefits delegators) and validatorReward(benefits the validator) are both optimal
-			if localValidatorReward.CmpBig(bestBid.packedValidatorReward) < 0 {
-				bidWinGauge.Inc(1)
-
-				bestWork = bestBid.env
-
-				log.Info("[BUILDER BLOCK]",
-					"block", bestWork.header.Number.Uint64(),
-					"builder", bestBid.bid.Builder,
-					"blockReward", weiToEtherStringF6(bestBid.packedBlockReward),
-					"validatorReward", weiToEtherStringF6(bestBid.packedValidatorReward),
-					"bid", bestBid.bid.Hash().TerminalString(),
-				)
-			}
+			log.Info("[BUILDER BLOCK]",
+				"block", bestWork.header.Number.Uint64(),
+				"builder", bestBid.bid.Builder,
+				"blockReward", weiToEtherStringF6(bestBid.blockReward().ToBig()),
+				"bid", bestBid.bid.Hash().TerminalString(),
+			)
 		}
 	}
 
