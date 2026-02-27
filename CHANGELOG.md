@@ -1,4 +1,14 @@
 # Changelog
+## v1.6.7
+### BUGFIX
+crypto/secp256k1: fix coordinate check
+crypto/ecies: fix ECIES invalid-curve handling
+
+## v1.6.6
+### BUGFIX
+core/txpool: drop peers on invalid KZG proofs
+crypto/ecies: use aes blocksize
+
 ## v1.6.5
 ### FEATURE
 [\#3488](https://github.com/bnb-chain/bsc/pull/3488) miner: optional transaction gas limit cap
