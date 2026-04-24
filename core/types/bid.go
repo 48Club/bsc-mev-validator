@@ -194,6 +194,10 @@ type Bid struct {
 
 	// mev-validator specific
 	NontaxableFee *uint256.Int
+
+	// BlobValResults carries per-tx results of async blob validation (field
+	// checks + KZG proof verification), keyed by transaction hash.
+	BlobValResults map[common.Hash]chan error
 }
 
 func (b *Bid) Commit() {

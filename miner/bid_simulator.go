@@ -43,6 +43,9 @@ var (
 	simulateSpeedGauge = metrics.NewRegisteredGauge("bid/sim/simulateSpeed", nil) // mgasps
 
 	bidSimTimeoutCounter = metrics.NewRegisteredCounter("bid/sim/simTimeout", nil)
+
+	// greedyMergeOnchainCounter counts bids that went through greedy merge and were finally chosen as BUILDER BLOCK.
+	greedyMergeOnchainCounter = metrics.NewRegisteredCounter("bid/greedyMerge/onchain", nil)
 )
 
 var (
@@ -757,6 +760,8 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		}
 	}(startTS)
 
+	startAsyncBlobValidation(bidRuntime.bid)
+
 	// prepareWork will configure header with a suitable time according to consensus
 	// prepareWork will start trie prefetching
 	if bidRuntime.env, err = b.bidWorker.prepareWork(&generateParams{
@@ -849,11 +854,13 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 	// if enable greedy merge, fill bid env with transactions from mempool
 	greedyMergeElapsed := time.Duration(0)
 	if *b.config.GreedyMergeTx {
-		endingBidsExtra := 20 * time.Millisecond // Add a buffer to ensure ending bids before `delayLeftOver`
+		endingBidsExtra := 10 * time.Millisecond // Add a buffer to ensure ending bids before `delayLeftOver`
 		minTimeLeftForEndingBids := b.delayLeftOver + endingBidsExtra
 		delay := b.engine.Delay(b.chain, bidRuntime.env.header, &minTimeLeftForEndingBids)
 		if delay != nil && *delay > 0 {
 			greedyMergeStartTs := time.Now()
+			tcountBefore := bidRuntime.env.tcount
+			bidRuntime.greedyMerged = true
 			bidTxsSet := mapset.NewThreadUnsafeSetWithSize[common.Hash](len(bidRuntime.bid.Txs))
 			for _, tx := range bidRuntime.bid.Txs {
 				bidTxsSet.Add(tx.Hash())
@@ -865,9 +872,11 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 			// recalculate the packed reward
 			bidRuntime.updateBlockGasFee(false)
 			greedyMergeElapsed = time.Since(greedyMergeStartTs)
+			addedTx := bidRuntime.env.tcount - tcountBefore
 
 			log.Debug("BidSimulator: greedy merge stopped", "block", bidRuntime.env.header.Number,
-				"builder", bidRuntime.bid.Builder, "tx count", bidRuntime.env.tcount-bidTxLen+1, "err", fillErr, "greedyMergeElapsed", greedyMergeElapsed)
+				"builder", bidRuntime.bid.Builder, "addedTx", addedTx,
+				"budget", *delay, "elapsed", greedyMergeElapsed, "err", fillErr)
 		}
 	}
 
@@ -948,6 +957,8 @@ type BidRuntime struct {
 
 	finished chan struct{}
 	duration time.Duration
+
+	greedyMerged bool
 }
 
 func newBidRuntime(newBid *types.Bid) *BidRuntime {
@@ -1034,9 +1045,15 @@ func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *para
 			return nil, errors.New("cell proof is not supported yet")
 		}
 
-		// Validate blob sidecar commitment hashes and KZG proofs.
-		if err := txpool.ValidateBlobTx(tx, env.header, nil); err != nil {
-			return nil, err
+		if ch, ok := r.bid.BlobValResults[tx.Hash()]; ok {
+			delete(r.bid.BlobValResults, tx.Hash())
+			if err := <-ch; err != nil {
+				return nil, err
+			}
+		} else {
+			if err := txpool.ValidateBlobTx(tx, env.header, nil); err != nil {
+				return nil, err
+			}
 		}
 
 		// Checking against blob gas limit: It's kind of ugly to perform this check here, but there
