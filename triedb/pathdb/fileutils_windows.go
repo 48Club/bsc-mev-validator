@@ -1,4 +1,4 @@
-// Copyright 2021 The go-ethereum Authors
+// Copyright 2025 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
 // The go-ethereum library is free software: you can redistribute it and/or modify
@@ -14,13 +14,11 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package snap
+//go:build windows
 
-import (
-	"time"
+package pathdb
 
-	"github.com/ethereum/go-ethereum/p2p/tracker"
-)
-
-// requestTracker is a singleton tracker for request times.
-var requestTracker = tracker.New(ProtocolName, time.Minute)
+func syncDir(name string) error {
+	// On Windows, fsync on directories is not supported
+	return nil
+}
