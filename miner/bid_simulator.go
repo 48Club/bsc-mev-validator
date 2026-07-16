@@ -13,6 +13,7 @@ import (
 	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
+	"github.com/holiman/uint256"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/bidutil"
@@ -469,13 +470,7 @@ func (b *bidSimulator) newBidLoop() {
 				continue
 			}
 
-			bidRuntime, err := newBidRuntime(newBid.bid, *b.config.ValidatorCommission)
-			if err != nil {
-				if newBid.feedback != nil {
-					newBid.feedback <- err
-				}
-				continue
-			}
+			bidRuntime := newBidRuntime(newBid.bid)
 
 			// Pre-check before simulation for fast feedback to the builder;
 			// simulation would reject these txs anyway via state_transition preCheck.
@@ -491,7 +486,7 @@ func (b *bidSimulator) newBidLoop() {
 			bidAcceptted := true
 			bestBidToRun := b.GetBestBidToRun(newBid.bid.ParentHash)
 			if bestBidToRun != nil {
-				bestBidRuntime, _ := newBidRuntime(bestBidToRun, *b.config.ValidatorCommission)
+				bestBidRuntime := newBidRuntime(bestBidToRun)
 				if bidRuntime.isExpectedBetterThan(bestBidRuntime) {
 					// new bid has better expectedBlockReward, use bidRuntime
 					log.Debug("new bid has better expectedBlockReward",
@@ -548,8 +543,8 @@ func (b *bidSimulator) newBidLoop() {
 					"block", newBid.bid.BlockNumber,
 					"builder", newBid.bid.Builder,
 					"accepted", bidAcceptted,
-					"blockReward", weiToEtherStringF6(bidRuntime.expectedBlockReward),
-					"validatorReward", weiToEtherStringF6(bidRuntime.expectedValidatorReward),
+					"gasFee", weiToEtherStringF6(newBid.bid.GasFee),
+					"nontaxable", weiToEtherStringF6(newBid.bid.NontaxableFee.ToBig()),
 					"tx", len(newBid.bid.Txs),
 					"hash", newBid.bid.Hash().TerminalString(),
 				)
@@ -679,14 +674,18 @@ func (b *bidSimulator) clearLoop() {
 	}
 }
 
-// AddBidBlock keeps the best BidBlock for a given parent hash.
+// AddBidBlock keeps the best BidBlock for a given parent hash by unified reward.
 func (b *bidSimulator) AddBidBlock(parentHash common.Hash, block *buildertypes.DecodedBidBlock) error {
 	b.bestBidBlockMu.Lock()
 	defer b.bestBidBlockMu.Unlock()
 
-	if existing := b.bestBidBlock[parentHash]; existing != nil && block.GasFee.Cmp(existing.GasFee) <= 0 {
-		return fmt.Errorf("BidBlock gasFee not higher than current best: bidHash=%s got %s, bestBidHash=%s best %s",
-			block.Hash(), weiToEtherStringF6(block.GasFee), existing.Hash(), weiToEtherStringF6(existing.GasFee))
+	blockReward := totalBidReward(block.GasFee, block.BidPriorityFee)
+	if existing := b.bestBidBlock[parentHash]; existing != nil {
+		existingReward := totalBidReward(existing.GasFee, existing.BidPriorityFee)
+		if !rewardStrictlyBetter(blockReward, existingReward) {
+			return fmt.Errorf("BidBlock reward not higher than current best: bidHash=%s got %s, bestBidHash=%s best %s",
+				block.Hash(), weiToEtherStringF6(blockReward), existing.Hash(), weiToEtherStringF6(existingReward))
+		}
 	}
 	b.bestBidBlock[parentHash] = block
 	return nil
@@ -764,7 +763,24 @@ func (b *bidSimulator) preSealVerifyBidBlock(decoded *buildertypes.DecodedBidBlo
 		}
 	}
 
-	return parliaEngine.VerifyBidBlockSystemTxs(decoded, parent, decoded.SystemTxStart)
+	if err := parliaEngine.VerifyBidBlockSystemTxs(decoded, parent, decoded.SystemTxStart); err != nil {
+		return err
+	}
+
+	// BidBlock skips validator-side execution. Prove that configured receivers
+	// are plain EOAs in the parent state, reject block-local EIP-7702 changes to
+	// them, then derive the contribution from user transactions committed by
+	// Header.TxHash. This is exact: a 21,000-gas transfer to a code-free EOA
+	// cannot fail inside a valid block, so no post-import recheck exists.
+	var parentState accountCodeSizeReader
+	if len(b.config.ValidatorBidFeeEOA) != 0 {
+		state, err := b.chain.StateAt(parent.Root)
+		if err != nil {
+			return fmt.Errorf("load BidBlock parent state: %w", err)
+		}
+		parentState = state
+	}
+	return prepareBidBlockNontaxableFee(parentState, b.config.ValidatorBidFeeEOA, decoded)
 }
 
 // validateBidBlockBlobSidecars checks cheap sidecar invariants before bid selection.
@@ -836,7 +852,7 @@ func (b *bidSimulator) sendBidBlock(_ context.Context, block *buildertypes.Decod
 	}
 }
 
-// newBidBlockLoop stores the best incoming BidBlock by GasFee.
+// newBidBlockLoop stores the best incoming BidBlock by unified reward.
 func (b *bidSimulator) newBidBlockLoop() {
 	for {
 		select {
@@ -882,6 +898,7 @@ func (b *bidSimulator) newBidBlockLoop() {
 				"bidHash", block.Hash(),
 				"builder", block.Builder,
 				"gasFee", weiToEtherStringF6(block.GasFee),
+				"nontaxable", weiToEtherStringF6(block.BidPriorityFee.ToBig()),
 				"txs", len(block.Txs))
 			if newBidBlock.feedback != nil {
 				newBidBlock.feedback <- nil
@@ -1110,6 +1127,15 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		}
 	}
 
+	bidRuntime.bidPriorityFee, err = calcNontaxableFee(
+		b.config.ValidatorBidFeeEOA,
+		bidRuntime.env.txs,
+		bidRuntime.env.receipts,
+	)
+	if err != nil {
+		return
+	}
+
 	// check whether time `NoInterruptLeftOver-delayLeftOver` is enough for simulating
 	delay = b.engine.Delay(b.chain, bidRuntime.env.header, &b.delayLeftOver)
 	if delay != nil && *delay < 0 {
@@ -1120,49 +1146,10 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 
 	// check if bid reward is valid
 	{
-		bidRuntime.packReward(*b.config.ValidatorCommission)
+		bidRuntime.updateBlockGasFee(true)
 		if !bidRuntime.validReward() {
 			err = errors.New("reward does not achieve the expectation")
 			return
-		}
-	}
-
-	// check if bid gas price is lower than min gas price
-	{
-		bidGasUsed := uint64(0)
-		bidGasFee := big.NewInt(0)
-
-		for i, receipt := range bidRuntime.env.receipts {
-			tx := bidRuntime.env.txs[i]
-			if !b.txpool.Has(tx.Hash()) {
-				bidGasUsed += receipt.GasUsed
-				effectiveTip, er := tx.EffectiveGasTip(bidRuntime.env.header.BaseFee)
-				if er != nil {
-					err = errors.New("failed to calculate effective tip")
-					return
-				}
-
-				if bidRuntime.env.header.BaseFee != nil {
-					effectiveTip.Add(effectiveTip, bidRuntime.env.header.BaseFee)
-				}
-
-				gasFee := new(big.Int).Mul(effectiveTip, new(big.Int).SetUint64(receipt.GasUsed))
-				bidGasFee.Add(bidGasFee, gasFee)
-
-				if tx.Type() == types.BlobTxType {
-					blobFee := new(big.Int).Mul(receipt.BlobGasPrice, new(big.Int).SetUint64(receipt.BlobGasUsed))
-					bidGasFee.Add(bidGasFee, blobFee)
-				}
-			}
-		}
-
-		// if bid txs are all from mempool, do not check gas price
-		if bidGasUsed != 0 {
-			bidGasPrice := new(big.Int).Div(bidGasFee, new(big.Int).SetUint64(bidGasUsed))
-			if bidGasPrice.Cmp(b.minGasPrice) < 0 {
-				err = fmt.Errorf("bid gas price is lower than min gas price, bid:%v, min:%v", bidGasPrice, b.minGasPrice)
-				return
-			}
 		}
 	}
 
@@ -1174,7 +1161,7 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		delay := b.engine.Delay(b.chain, bidRuntime.env.header, &minTimeLeftForEndingBids)
 		if delay != nil && *delay > 0 {
 			greedyMergeStartTs := time.Now()
-			rewardBefore := new(big.Int).Set(bidRuntime.packedBlockReward)
+			rewardBefore := bidRuntime.blockReward()
 			tcountBefore := bidRuntime.env.tcount
 			bidRuntime.greedyMerged = true
 			bidTxsSet := mapset.NewThreadUnsafeSetWithSize[common.Hash](len(bidRuntime.bid.Txs))
@@ -1186,10 +1173,10 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 			fillErr := b.bidWorker.fillTransactions(interruptCh, bidRuntime.env, stopTimer, bidTxsSet)
 
 			// recalculate the packed reward
-			bidRuntime.packReward(*b.config.ValidatorCommission)
+			bidRuntime.updateBlockGasFee(false)
 			greedyMergeElapsed = time.Since(greedyMergeStartTs)
 			addedTx := bidRuntime.env.tcount - tcountBefore
-			rewardDelta := new(big.Int).Sub(bidRuntime.packedBlockReward, rewardBefore)
+			rewardDelta := new(big.Int).Sub(bidRuntime.blockReward(), rewardBefore)
 
 			log.Debug("BidSimulator: greedy merge stopped", "block", bidRuntime.env.header.Number,
 				"builder", bidRuntime.bid.Builder, "addedTx", addedTx, "rewardDelta", weiToEtherStringF6(rewardDelta),
@@ -1214,13 +1201,13 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		log.Info("[BID RESULT]", "win", winResult, "builder", bidRuntime.bid.Builder, "hash", bidRuntime.bid.Hash().TerminalString(), "simElapsed", simElapsed)
 	} else if bidRuntime.bid.Hash() != bestBid.bid.Hash() { // skip log flushing when only one bid is present
 		log.Info("[BID RESULT]",
-			"win", bidRuntime.packedBlockReward.Cmp(bestBid.packedBlockReward) > 0,
+			"win", bidRuntime.blockReward().Cmp(bestBid.blockReward()) > 0,
 
 			"bidHash", bidRuntime.bid.Hash().TerminalString(),
 			"bestHash", bestBid.bid.Hash().TerminalString(),
 
-			"bidGasFee", weiToEtherStringF6(bidRuntime.packedBlockReward),
-			"bestGasFee", weiToEtherStringF6(bestBid.packedBlockReward),
+			"bidReward", weiToEtherStringF6(bidRuntime.blockReward()),
+			"bestReward", weiToEtherStringF6(bestBid.blockReward()),
 
 			"bidBlockTx", bidRuntime.env.tcount,
 			"bestBlockTx", bestBid.env.tcount,
@@ -1237,7 +1224,7 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 	}
 
 	// this is the simplest strategy: best for all the delegators.
-	if bestBid == nil || bidRuntime.packedBlockReward.Cmp(bestBid.packedBlockReward) > 0 {
+	if bestBid == nil || bidRuntime.blockReward().Cmp(bestBid.blockReward()) > 0 {
 		b.SetBestBid(bidRuntime.bid.ParentHash, bidRuntime)
 		bidRuntime.duration = time.Since(startTS)
 		bidSimTimer.UpdateSince(startTS)
@@ -1269,11 +1256,9 @@ type BidRuntime struct {
 
 	env *environment
 
-	expectedBlockReward     *big.Int
-	expectedValidatorReward *big.Int
-
-	packedBlockReward     *big.Int
-	packedValidatorReward *big.Int
+	blockGasFeeByBid *uint256.Int
+	blockGasFeeTotal *uint256.Int
+	bidPriorityFee   *uint256.Int
 
 	finished chan struct{}
 	duration time.Duration
@@ -1281,48 +1266,31 @@ type BidRuntime struct {
 	greedyMerged bool
 }
 
-func newBidRuntime(newBid *buildertypes.Bid, validatorCommission uint64) (*BidRuntime, error) {
-	// check the block reward and validator reward of the newBid
-	expectedBlockReward := newBid.GasFee
-	expectedValidatorReward := new(big.Int).Mul(expectedBlockReward, big.NewInt(int64(validatorCommission)))
-	expectedValidatorReward.Div(expectedValidatorReward, big.NewInt(10000))
-	expectedValidatorReward.Sub(expectedValidatorReward, newBid.BuilderFee)
+func newBidRuntime(newBid *buildertypes.Bid) *BidRuntime {
+	return &BidRuntime{bid: newBid, bidPriorityFee: uint256.NewInt(0), finished: make(chan struct{})}
+}
 
-	if expectedValidatorReward.Cmp(big.NewInt(0)) < 0 {
-		// damage self profit, ignore
-		log.Debug("BidSimulator: invalid bid, validator reward is less than 0, ignore",
-			"builder", newBid.Builder, "bidHash", newBid.Hash().Hex())
-		return nil, fmt.Errorf("validator reward is less than 0, value: %s, commissionConfig: %d", expectedValidatorReward, validatorCommission)
+func (r *BidRuntime) bidExpectedReward() *big.Int {
+	return totalBidReward(r.bid.GasFee, r.bid.NontaxableFee)
+}
+
+func (r *BidRuntime) updateBlockGasFee(isByBid bool) {
+	r.blockGasFeeTotal = r.env.state.GetBalance(consensus.SystemAddress)
+	if isByBid {
+		r.blockGasFeeByBid = r.blockGasFeeTotal.Clone()
 	}
-
-	bidRuntime := &BidRuntime{
-		bid:                     newBid,
-		expectedBlockReward:     expectedBlockReward,
-		expectedValidatorReward: expectedValidatorReward,
-		packedBlockReward:       big.NewInt(0),
-		packedValidatorReward:   big.NewInt(0),
-		finished:                make(chan struct{}),
-	}
-
-	return bidRuntime, nil
 }
 
 func (r *BidRuntime) validReward() bool {
-	return r.packedBlockReward.Cmp(r.expectedBlockReward) >= 0 &&
-		r.packedValidatorReward.Cmp(r.expectedValidatorReward) >= 0
+	return r.bidPriorityFee.Cmp(r.bid.NontaxableFee) >= 0 && r.blockGasFeeByBid.CmpBig(r.bid.GasFee) >= 0
 }
 
 func (r *BidRuntime) isExpectedBetterThan(other *BidRuntime) bool {
-	return r.expectedBlockReward.Cmp(other.expectedBlockReward) >= 0 &&
-		r.expectedValidatorReward.Cmp(other.expectedValidatorReward) >= 0
+	return rewardStrictlyBetter(r.bidExpectedReward(), other.bidExpectedReward())
 }
 
-// packReward calculates packedBlockReward and packedValidatorReward
-func (r *BidRuntime) packReward(validatorCommission uint64) {
-	r.packedBlockReward = r.env.state.GetBalance(consensus.SystemAddress).ToBig()
-	r.packedValidatorReward = new(big.Int).Mul(r.packedBlockReward, big.NewInt(int64(validatorCommission)))
-	r.packedValidatorReward.Div(r.packedValidatorReward, big.NewInt(10000))
-	r.packedValidatorReward.Sub(r.packedValidatorReward, r.bid.BuilderFee)
+func (r *BidRuntime) blockReward() *big.Int {
+	return totalBidReward(r.blockGasFeeTotal.ToBig(), r.bidPriorityFee)
 }
 
 func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *params.ChainConfig, tx *types.Transaction, unRevertible bool) error {

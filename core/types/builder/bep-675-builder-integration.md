@@ -24,6 +24,7 @@ parent header / state
         Header       = block.Header()
         Transactions = tx.MarshalBinary()
         Sidecars     = block.Sidecars()
+        EOA payment txs remain in the user-tx region
 
   → Sign BidBlock.Hash()
         produces builder.BidBlockArgs
@@ -89,7 +90,7 @@ block, receipts, err := parliaEngine.FinalizeAndAssembleBidBlock(
 
 Signing does not affect EVM state transitions, so the execution results are identical whether the system transactions are signed (validator-mining path) or unsigned (builder packing path). The validator bind-signs these unsigned system txs at seal time and recomputes `TxHash`.
 
-`GasFee` is not a wire field of `BidBlock`. The validator derives it from the `value` of the trailing `deposit` system transaction and uses it to rank competing BidBlocks for the same parent.
+`GasFee` is not a wire field of `BidBlock`. The validator derives it from the `value` of the trailing `deposit` system transaction. 48Club ranks the bid using `floor(GasFee * 90 / 100) + verified direct EOA contributions`.
 
 ## 4. Assemble the BidBlock Payload
 
@@ -108,14 +109,38 @@ bidBlock := &builder.BidBlock{
 
 **Hard ordering constraint:** user txs come first, unsigned system txs come last.
 
+### 48Club direct EOA contribution
+
+The validator exposes its accepted payment addresses as `ValidatorBidFeeEOA` in `mev_params`. A direct contribution must be a successful native-token transfer in the user-transaction region with all of these properties:
+
+- `gasLimit == 21000`
+- empty calldata
+- positive value
+- recipient is one of `ValidatorBidFeeEOA`
+- recipient has no contract code or EIP-7702 delegation in the parent state
+- no user transaction in the BidBlock carries an EIP-7702 authorization for that recipient
+
+Set `BidBlockArgs.NontaxableFee` to the minimum direct contribution expected from the block:
+
+```go
+args := &builder.BidBlockArgs{
+    BidBlock:       bidBlock,
+    NontaxableFee: expectedDirectContribution,
+}
+```
+
+The validator does not rank from this declaration. Before sealing it verifies the receiver-EOA premise against the parent state, derives the amount from the user transactions committed by `Header.TxHash`, and rejects a declaration larger than that amount. This derivation is exact — a 21,000-gas transfer to a code-free EOA cannot fail inside a valid block, and an underfunded sender invalidates the whole block (caught by the validator's post-seal `InsertChain`) — so there is no receipts-based recheck after import.
+
+Candidate ranking uses `floor(GasFee * 90 / 100) + direct contribution`. `ValidatorCommission` and `BuilderFee` do not participate in this 48Club ranking policy. The existing minimum-average-gas-price check remains a separate compatibility policy and continues to use `GasFee` only; direct contribution does not relax that check.
+
 ## 5. Signing
 
 ```go
 sig, _ := crypto.Sign(bidBlock.Hash().Bytes(), builderKey)
-args := &builder.BidBlockArgs{BidBlock: bidBlock, Signature: sig}
+args.Signature = sig
 ```
 
-A bare keccak digest, with no EIP-191/712 prefix, consistent with the existing `mev_sendBid`. The validator recovers the address using `args.EcrecoverSender()`.
+A bare keccak digest, with no EIP-191/712 prefix, consistent with the existing `mev_sendBid`. The validator recovers the address using `args.EcrecoverSender()`. As in legacy `BidArgs`, `NontaxableFee` is an unsigned lower-bound hint. It cannot inflate ranking because ranking is derived from transactions covered by the signed header's `TxHash`.
 
 ## 6. Send and Fallback
 
@@ -123,10 +148,10 @@ A bare keccak digest, with no EIP-191/712 prefix, consistent with the existing `
 
 Builders poll `mev_getBidBlockPermission` to determine whether the BidBlock path is currently open for them on a given validator, and fall back to legacy `mev_sendBid` when it is not.
 
-The RPC does not surface permission denial through a JSON-RPC error; state is carried in the `allowed` field of the result. When `allowed` is false, `reason` identifies why. Current values:
+The RPC does not surface permission denial through a JSON-RPC error; state is carried in the `allowed` field of the result. When `allowed` is false, `reason` carries the validator-side error text of the revoke. Except for the literal `manual`, treat it as a free-text diagnostic and match on the stable prefixes below rather than on exact strings:
 
-- `insertchain_failed` — the last sealed BidBlock from this builder failed validator-side `InsertChain` (e.g. invalid state root, mismatched receipt hash, KZG proof failure).
-- `gasprice_too_low` — the sealed BidBlock imported successfully, but its average gas price (excluding system transactions) was below the validator's configured minimum.
+- `InsertChain err: ...` — the last sealed BidBlock from this builder failed validator-side `InsertChain` (e.g. invalid state root, mismatched receipt hash, KZG proof failure).
+- `BidBlock average gas price too low, ...` — the sealed BidBlock imported successfully, but its `GasFee` per non-system gas was below the validator's configured minimum.
 - `manual` — admin revoke via `admin_setBidBlockPermission`.
 
 `mev_getBidBlockPermission` response:
@@ -134,7 +159,7 @@ The RPC does not surface permission denial through a JSON-RPC error; state is ca
 ```jsonc
 {
   "allowed": false,
-  "reason": "insertchain_failed",
+  "reason": "InsertChain err: invalid merkle root (remote: ... local: ...)",
   "blockHash": "0x...",
   "blockNumber": "0x123",
   "revokedAt": "2026-05-22T...",       // when the revoke happened
@@ -183,3 +208,4 @@ The transmission latency on the wire is not constant: the number of transactions
 5. Permission must be polled continuously (every 5–10 seconds is recommended); the cache is also invalidated whenever `mev_sendBidBlock` returns "permission revoked". When `mev_params.BidBlockEnabled == false`, treat it the same as permission denied.
 6. The builder must handle BidBlock failure paths: (1) `mev_sendBidBlock` may return a direct error; (2) permission may be revoked, with the reason exposed by `mev_getBidBlockPermission`; (3) validator admin or local policy changes may later restore or revoke permission.
 7. **Send the BidBlock as close to `BidMustBefore` as possible** (leaving the ≈100µs buffer noted above) — a later send leaves more time for transaction selection and execution, maximizing the value packed into the block.
+8. Direct EOA contribution is derived from signed user transactions; `NontaxableFee` is only a minimum-value assertion.

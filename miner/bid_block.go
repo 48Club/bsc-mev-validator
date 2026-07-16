@@ -29,6 +29,8 @@ type bidBlockTaskInfo struct {
 	bidHash       common.Hash
 	gasFee        *big.Int
 	systemTxStart int
+
+	nontaxableFee *uint256.Int
 }
 
 var errInvalidBidBlockBlobTx = errors.New("BidBlock blob validation failed")
@@ -48,51 +50,41 @@ func setBidMevInfo(header *types.Header, builder common.Address, isBidBlock bool
 	header.RequestsHash = &tag
 }
 
-func (w *worker) selectBidBlock(bidBlock *buildertypes.DecodedBidBlock, simBidBlockReward, simBidValidatorReward, bestReward *uint256.Int) bool {
+func (w *worker) selectBidBlock(bidBlock *buildertypes.DecodedBidBlock, simBidReward, localReward *big.Int) bool {
 	if bidBlock == nil {
 		return false
 	}
 
-	bidBlockFee := bidBlock.GasFee
-	bidBlockValidatorReward := new(big.Int).Mul(bidBlockFee, new(big.Int).SetUint64(*w.config.Mev.ValidatorCommission))
-	bidBlockValidatorReward.Div(bidBlockValidatorReward, big.NewInt(10000))
-
-	if simBidValidatorReward != nil && bidBlockValidatorReward.Cmp(simBidValidatorReward.ToBig()) <= 0 {
+	bidBlockReward := totalBidReward(bidBlock.GasFee, bidBlock.BidPriorityFee)
+	if !rewardStrictlyBetter(bidBlockReward, simBidReward) {
 		return false
 	}
-	if simBidBlockReward != nil && bidBlockFee.Cmp(simBidBlockReward.ToBig()) <= 0 {
+	if !rewardStrictlyBetter(bidBlockReward, localReward) {
 		return false
 	}
 
-	simBidBR := "<none>"
-	if simBidBlockReward != nil {
-		simBidBR = simBidBlockReward.String()
-	}
-	simBidVR := "<none>"
-	if simBidValidatorReward != nil {
-		simBidVR = simBidValidatorReward.String()
+	simReward := "<none>"
+	if simBidReward != nil {
+		simReward = simBidReward.String()
 	}
 	blockNum := bidBlock.Header.Number.Uint64()
 	// TODO: switch back to Debug after BidBlock rollout stabilizes.
 	log.Info("BidSimulator: BidBlock win bid, compare with local",
 		"block", blockNum,
 		"bidHash", bidBlock.Hash(),
-		"localBlockReward", bestReward.String(),
-		"bidReward", bidBlockFee.String(),
-		"bidValidatorReward", bidBlockValidatorReward.String(),
-		"simBidBlockReward", simBidBR,
-		"simBidValidatorReward", simBidVR)
+		"localReward", localReward,
+		"bidReward", bidBlockReward,
+		"simBidReward", simReward)
 
-	if bidBlockFee.Cmp(bestReward.ToBig()) > 0 {
-		log.Info("[BID BLOCK selected]",
-			"block", blockNum,
-			"bidHash", bidBlock.Hash(),
-			"builder", bidBlock.Builder,
-			"gasFee", weiToEtherStringF6(bidBlock.GasFee),
-			"txs", len(bidBlock.Txs))
-		return true
-	}
-	return false
+	log.Info("[BID BLOCK selected]",
+		"block", blockNum,
+		"bidHash", bidBlock.Hash(),
+		"builder", bidBlock.Builder,
+		"gasFee", weiToEtherStringF6(bidBlock.GasFee),
+		"nontaxable", weiToEtherStringF6(bidBlock.BidPriorityFee.ToBig()),
+		"reward", weiToEtherStringF6(bidBlockReward),
+		"txs", len(bidBlock.Txs))
+	return true
 }
 
 // bindSignBidBlockSystemTxs signs the verified unsigned system txs from a BidBlock in place.
@@ -160,6 +152,7 @@ func (w *worker) prepareBidBlockTask(
 			builder:       decoded.Builder,
 			bidHash:       decoded.Hash(),
 			gasFee:        decoded.GasFee,
+			nontaxableFee: decoded.BidPriorityFee,
 			systemTxStart: decoded.SystemTxStart,
 		},
 		createdAt:     time.Now(),
@@ -230,7 +223,8 @@ func (w *worker) enqueueBidBlockTask(task *task, systemTxs int) {
 			"txs", len(task.block.Transactions()),
 			"systemTxs", systemTxs,
 			"gas", task.block.GasUsed(),
-			"gasFee", weiToEtherStringF6(task.bidBlockInfo.gasFee))
+			"gasFee", weiToEtherStringF6(task.bidBlockInfo.gasFee),
+			"nontaxable", weiToEtherStringF6(task.bidBlockInfo.nontaxableFee.ToBig()))
 	case <-w.exitCh:
 		log.Info("Worker has exited")
 	}
@@ -294,6 +288,8 @@ func (w *worker) handleBidBlockResult(block *types.Block, task *task) {
 		return
 	}
 	// Check the post-import average gas price excluding system transactions; only future BidBlock permission is revoked.
+	// Direct EOA contributions affect bid reward only and do not change the original
+	// BidBlock minimum-average-gas-price policy.
 	if receipts := w.chain.GetReceiptsByHash(block.Hash()); receipts != nil {
 		avgGasPrice, nonSystemGasUsed, err := validateBidBlockAverageGasPrice(
 			task.bidBlockInfo.gasFee,
@@ -323,5 +319,6 @@ func (w *worker) handleBidBlockResult(block *types.Block, task *task) {
 		"hash", hash,
 		"bidHash", task.bidBlockInfo.bidHash,
 		"builder", task.bidBlockInfo.builder,
-		"gasFee", weiToEtherStringF6(task.bidBlockInfo.gasFee))
+		"gasFee", weiToEtherStringF6(task.bidBlockInfo.gasFee),
+		"nontaxable", weiToEtherStringF6(task.bidBlockInfo.nontaxableFee.ToBig()))
 }

@@ -1433,13 +1433,10 @@ LOOP:
 	var bestBidBlock *buildertypes.DecodedBidBlock
 	var bidBlockCommitted bool
 	var bidBlockFallback bool
-	var simBidBlockReward *uint256.Int
-	var simBidValidatorReward *uint256.Int
-	var localValidatorReward *uint256.Int
+	var simBidReward *big.Int
+	localReward := calcRewardAfterBEP95(bestReward.ToBig())
 	if w.bidFetcher != nil && bestWork.header.Difficulty.Cmp(diffInTurn) == 0 {
 		inturnBlocksGauge.Inc(1)
-		localValidatorReward = new(uint256.Int).Mul(bestReward, uint256.NewInt(*w.config.Mev.ValidatorCommission))
-		localValidatorReward.Div(localValidatorReward, uint256.NewInt(10000))
 
 		// We want to start sealing the block as late as possible here if mev is enabled, so we could give builder the chance to send their final bid.
 		// Time left till sealing the block.
@@ -1465,8 +1462,7 @@ LOOP:
 			bidExistGauge.Inc(1)
 			bestBidGasUsedGauge.Update(int64(bestBid.bid.GasUsed) / 1_000_000)
 			bestWorkGasUsedGauge.Update(int64(bestWork.header.GasUsed) / 1_000_000)
-			simBidBlockReward = uint256.MustFromBig(bestBid.packedBlockReward)
-			simBidValidatorReward = uint256.MustFromBig(bestBid.packedValidatorReward)
+			simBidReward = bestBid.blockReward()
 		}
 
 		// Stage 1 candidate B — SendBidBlock.
@@ -1476,7 +1472,7 @@ LOOP:
 		}
 	}
 
-	if bestBidBlock != nil && w.selectBidBlock(bestBidBlock, simBidBlockReward, simBidValidatorReward, bestReward) {
+	if bestBidBlock != nil && w.selectBidBlock(bestBidBlock, simBidReward, localReward) {
 		bidBlockWinGauge.Inc(1)
 		task, err := w.prepareBidBlockTask(bestBidBlock, start)
 		if err != nil {
@@ -1502,11 +1498,9 @@ LOOP:
 		return
 	}
 
-	// simBid fallback. Re-runs the legacy dual-threshold gate against simBid
-	// whenever no BidBlock is being committed.
+	// simBid fallback. Compare unified rewards whenever no BidBlock is being committed.
 	if bestBid != nil {
-		if bestReward.Cmp(simBidBlockReward) < 0 &&
-			localValidatorReward.Cmp(simBidValidatorReward) < 0 {
+		if rewardStrictlyBetter(simBidReward, localReward) {
 			bidWinGauge.Inc(1)
 			if bestBid.greedyMerged {
 				greedyMergeOnchainCounter.Inc(1)
@@ -1521,8 +1515,7 @@ LOOP:
 			log.Info(logMsg,
 				"block", bestWork.header.Number.Uint64(),
 				"builder", bestBid.bid.Builder,
-				"blockReward", weiToEtherStringF6(simBidBlockReward.ToBig()),
-				"validatorReward", weiToEtherStringF6(simBidValidatorReward.ToBig()),
+				"blockReward", weiToEtherStringF6(simBidReward),
 				"bid", bestBid.bid.Hash().TerminalString(),
 			)
 		}

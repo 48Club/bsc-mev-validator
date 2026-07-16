@@ -7,6 +7,7 @@ import (
 	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
+	"github.com/holiman/uint256"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -28,6 +29,9 @@ type BidArgs struct {
 	// PayBidTx is a payment tx to builder from sentry, which is optional
 	PayBidTx        hexutil.Bytes `json:"payBidTx"`
 	PayBidTxGasUsed uint64        `json:"payBidTxGasUsed"`
+
+	// NontaxableFee is the bid contribution paid directly to the validator EOA.
+	NontaxableFee *big.Int `json:"nontaxableFee"`
 }
 
 func (b *BidArgs) EcrecoverSender() (common.Address, error) {
@@ -56,9 +60,16 @@ func (b *BidArgs) ToBid(builder common.Address, signer types.Signer) (*Bid, erro
 		err = payBidTx.UnmarshalBinary(b.PayBidTx)
 		if err != nil {
 			return nil, err
+		} else if payBidTx.Value().Sign() > 0 {
+			return nil, fmt.Errorf("bid payback value is capped at 0")
 		}
 
 		txs = append(txs, payBidTx)
+	}
+
+	nontaxableFee, err := parseNontaxableFee(b.NontaxableFee)
+	if err != nil {
+		return nil, err
 	}
 
 	bid := &Bid{
@@ -71,6 +82,8 @@ func (b *BidArgs) ToBid(builder common.Address, signer types.Signer) (*Bid, erro
 		GasFee:       b.RawBid.GasFee,
 		BuilderFee:   b.RawBid.BuilderFee,
 		rawBid:       *b.RawBid,
+
+		NontaxableFee: nontaxableFee,
 	}
 
 	if bid.BuilderFee == nil {
@@ -78,6 +91,20 @@ func (b *BidArgs) ToBid(builder common.Address, signer types.Signer) (*Bid, erro
 	}
 
 	return bid, nil
+}
+
+func parseNontaxableFee(fee *big.Int) (*uint256.Int, error) {
+	if fee == nil {
+		return uint256.NewInt(0), nil
+	}
+	if fee.Sign() < 0 {
+		return nil, fmt.Errorf("nontaxable fee must not be negative")
+	}
+	value, overflow := uint256.FromBig(fee)
+	if overflow {
+		return nil, fmt.Errorf("nontaxable fee overflows uint256")
+	}
+	return value, nil
 }
 
 // RawBid represents a raw bid from builder directly.
@@ -182,6 +209,9 @@ type Bid struct {
 	// BlobValResults carries per-tx results of async blob validation (field
 	// checks + KZG proof verification), keyed by transaction hash.
 	BlobValResults map[common.Hash]chan error
+
+	// NontaxableFee is the expected contribution paid directly to the validator EOA.
+	NontaxableFee *uint256.Int
 }
 
 func (b *Bid) Commit() {
@@ -209,6 +239,9 @@ type BidIssue struct {
 type BidBlockArgs struct {
 	BidBlock  *BidBlock
 	Signature hexutil.Bytes `json:"signature"`
+	// NontaxableFee is an unsigned lower-bound assertion. Validators rank the
+	// block from direct transfers committed by BidBlock.Header.TxHash instead.
+	NontaxableFee *big.Int `json:"nontaxableFee"`
 }
 
 // EcrecoverSender recovers the builder address from the signature over BidBlock.Hash().
@@ -227,6 +260,10 @@ func (b *BidBlockArgs) ToDecodedBidBlock(builder common.Address) (*DecodedBidBlo
 	if err != nil {
 		return nil, err
 	}
+	nontaxableFee, err := parseNontaxableFee(b.NontaxableFee)
+	if err != nil {
+		return nil, err
+	}
 
 	sidecars := b.BidBlock.Sidecars
 	if sidecars == nil {
@@ -239,6 +276,8 @@ func (b *BidBlockArgs) ToDecodedBidBlock(builder common.Address) (*DecodedBidBlo
 		Txs:      txs,
 		Sidecars: sidecars,
 		bidHash:  b.BidBlock.Hash(),
+
+		NontaxableFee: nontaxableFee,
 	}, nil
 }
 
@@ -287,6 +326,9 @@ type DecodedBidBlock struct {
 	GasFee        *big.Int
 	SystemTxStart int // index in Txs where the unsigned trailing system-tx region begins; set during admission.
 
+	NontaxableFee  *uint256.Int // builder-declared minimum direct EOA contribution
+	BidPriorityFee *uint256.Int // structurally derived direct EOA contribution used for ranking
+
 	bidHash common.Hash
 }
 
@@ -315,6 +357,8 @@ type MevParams struct {
 	BuilderFeeCeil        *big.Int
 	BidBlockEnabled       bool // whether mev_sendBidBlock is accepted
 	Version               string
+
+	ValidatorBidFeeEOA []common.Address
 }
 
 // rlpHash encodes x and returns the keccak256 hash of the encoding. It mirrors
