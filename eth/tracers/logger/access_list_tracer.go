@@ -18,6 +18,7 @@ package logger
 
 import (
 	"maps"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
@@ -84,12 +85,17 @@ func (al accessList) equal(other accessList) bool {
 func (al accessList) accessList() types.AccessList {
 	acl := make(types.AccessList, 0, len(al))
 	for addr, slots := range al {
-		tuple := types.AccessTuple{Address: addr, StorageKeys: []common.Hash{}}
-		for slot := range slots {
-			tuple.StorageKeys = append(tuple.StorageKeys, slot)
+		keys := slices.SortedFunc(maps.Keys(slots), common.Hash.Cmp)
+		// Ensure keys is never nil to avoid JSON serialization issues.
+		// When slots is empty, slices.SortedFunc returns nil, but JSON marshaling
+		// will serialize nil slice as null instead of [], which breaks clients
+		// that expect storageKeys to always be an array.
+		if keys == nil {
+			keys = []common.Hash{}
 		}
-		acl = append(acl, tuple)
+		acl = append(acl, types.AccessTuple{Address: addr, StorageKeys: keys})
 	}
+	slices.SortFunc(acl, func(a, b types.AccessTuple) int { return a.Address.Cmp(b.Address) })
 	return acl
 }
 
@@ -122,8 +128,22 @@ func NewAccessListTracer(acl types.AccessList, addressesToExclude map[common.Add
 
 func (a *AccessListTracer) Hooks() *tracing.Hooks {
 	return &tracing.Hooks{
-		OnOpcode: a.OnOpcode,
+		OnOpcode:      a.OnOpcode,
+		OnStorageRead: a.OnStorageRead,
+		OnAccountRead: a.OnAccountRead,
 	}
+}
+
+// OnAccountRead implements tracing.AccountReadHook.
+func (a *AccessListTracer) OnAccountRead(addr common.Address) {
+	if _, ok := a.excl[addr]; !ok {
+		a.list.addAddress(addr)
+	}
+}
+
+// OnStorageRead implements tracing.StorageReadHook.
+func (a *AccessListTracer) OnStorageRead(addr common.Address, slot common.Hash) {
+	a.list.addSlot(addr, slot)
 }
 
 // OnOpcode captures all opcodes that touch storage or addresses and adds them to the accesslist.

@@ -36,6 +36,9 @@ var (
 	// Extra time for finalizing and committing blocks (excludes writing to disk).
 	defaultDelayLeftOver         = 15 * time.Millisecond
 	defaultBidSimulationLeftOver = 20 * time.Millisecond
+
+	// defaultBidBlockRevokesJournal is resolved relative to the node's datadir.
+	defaultBidBlockRevokesJournal = "bidblockrevokes.json"
 )
 
 func getDefaultNoInterruptLeftOver() *time.Duration {
@@ -54,6 +57,9 @@ var (
 	defaultBuilderFeeCeil      = "0"
 	defaultValidatorCommission = uint64(100)
 	defaultMaxBidsPerBuilder   = uint32(2) // Simple strategy: send one bid early, another near deadline
+	defaultGRPCPort            = 8552
+	defaultGRPCConcurrency     = uint32(32)
+	defaultGRPCRequestTimeout  = 10 * time.Second
 	// MEV validators accept SendBidBlock by default; the RPC stays gated on the
 	// Pasteur fork and can be disabled via Mev.BidBlockEnabled=false.
 	defaultBidBlockEnabled = true
@@ -71,6 +77,13 @@ type Config struct {
 	VoteEnable             bool           // Whether to vote when mining
 	MaxWaitProposalInSecs  *uint64        `toml:",omitempty"` // The maximum time to wait for the proposal to be done, it's aimed to prevent validator being slashed when restarting
 	DisableVoteAttestation bool           // Whether to skip assembling vote attestation
+	MaxBlobsPerBlock       int            `toml:",omitempty"` // Maximum number of blobs per block (0 for unset uses protocol default)
+
+	// BidBlockRevokesJournal is the file BidBlock revoke lockouts are persisted
+	// to so they survive restarts (BEP-675). A relative path is resolved under
+	// the node's datadir; empty disables persistence. It is validator-local MEV
+	// policy, deliberately kept out of chaindata.
+	BidBlockRevokesJournal string `toml:",omitempty"`
 
 	Mev MevConfig // Mev configuration
 }
@@ -78,7 +91,7 @@ type Config struct {
 // DefaultConfig contains default settings for miner.
 var DefaultConfig = Config{
 	GasCeil:  defaultGasCeil,
-	GasPrice: big.NewInt(params.GWei),
+	GasPrice: big.NewInt(params.GWei / 20),
 	// The default recommit time is chosen as two seconds since
 	// consensus-layer usually will wait a half slot of time(6s)
 	// for payload generation. It should be enough for Geth to
@@ -89,6 +102,8 @@ var DefaultConfig = Config{
 	// The default value is set to 45 seconds.
 	// Because the avg restart time in mainnet could be 30+ seconds, so the node try to wait for the next multi-proposals to be done.
 	MaxWaitProposalInSecs: &defaultMaxWaitProposalInSecs,
+
+	BidBlockRevokesJournal: defaultBidBlockRevokesJournal,
 
 	Mev: DefaultMevConfig,
 }
@@ -109,6 +124,10 @@ type MevConfig struct {
 	BidSimulationLeftOver *time.Duration  `toml:",omitempty"`
 	NoInterruptLeftOver   *time.Duration  `toml:",omitempty"`
 	MaxBidsPerBuilder     *uint32         `toml:",omitempty"` // Maximum number of bids allowed per builder per block
+	GRPCPort              int             `toml:",omitempty"` // BEP-675 BidBlockService listen port; 0 uses the default (use GRPCDisabled to turn the service off)
+	GRPCDisabled          bool            `toml:",omitempty"` // Whether to disable the BEP-675 BidBlockService
+	GRPCConcurrency       uint32          `toml:",omitempty"` // Maximum in-flight gRPC SendBidBlock calls; 0 uses the default
+	GRPCRequestTimeout    time.Duration   `toml:",omitempty"` // Total gRPC request timeout, including body upload; 0 uses the default
 
 	ValidatorBidFeeEOA []common.Address `toml:",omitempty"` // Validator-owned EOAs that receive direct builder payments
 }
@@ -124,6 +143,9 @@ var DefaultMevConfig = MevConfig{
 	BidSimulationLeftOver: &defaultBidSimulationLeftOver,
 	NoInterruptLeftOver:   getDefaultNoInterruptLeftOver(),
 	MaxBidsPerBuilder:     &defaultMaxBidsPerBuilder,
+	GRPCPort:              defaultGRPCPort,
+	GRPCConcurrency:       defaultGRPCConcurrency,
+	GRPCRequestTimeout:    defaultGRPCRequestTimeout,
 }
 
 func ApplyDefaultMinerConfig(cfg *Config) {
@@ -178,5 +200,17 @@ func ApplyDefaultMinerConfig(cfg *Config) {
 	if cfg.Mev.MaxBidsPerBuilder == nil {
 		cfg.Mev.MaxBidsPerBuilder = &defaultMaxBidsPerBuilder
 		log.Info("ApplyDefaultMinerConfig", "Mev.MaxBidsPerBuilder", *cfg.Mev.MaxBidsPerBuilder)
+	}
+	if cfg.Mev.GRPCPort <= 0 {
+		cfg.Mev.GRPCPort = defaultGRPCPort
+		log.Info("ApplyDefaultMinerConfig", "Mev.GRPCPort", cfg.Mev.GRPCPort)
+	}
+	if cfg.Mev.GRPCConcurrency == 0 {
+		cfg.Mev.GRPCConcurrency = defaultGRPCConcurrency
+		log.Info("ApplyDefaultMinerConfig", "Mev.GRPCConcurrency", cfg.Mev.GRPCConcurrency)
+	}
+	if cfg.Mev.GRPCRequestTimeout <= 0 {
+		cfg.Mev.GRPCRequestTimeout = defaultGRPCRequestTimeout
+		log.Info("ApplyDefaultMinerConfig", "Mev.GRPCRequestTimeout", cfg.Mev.GRPCRequestTimeout)
 	}
 }

@@ -19,7 +19,9 @@ package override
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -58,14 +60,26 @@ func (diff *StateOverride) Apply(statedb *state.StateDB, precompiles vm.Precompi
 	if diff == nil {
 		return nil
 	}
+	// Iterate in deterministic order so error messages and behavior are stable (e.g. for tests).
+	addrs := slices.SortedFunc(maps.Keys(*diff), common.Address.Cmp)
+
 	// Tracks destinations of precompiles that were moved.
 	dirtyAddrs := make(map[common.Address]struct{})
-	for addr, account := range *diff {
+	for _, addr := range addrs {
+		account := (*diff)[addr]
 		// If a precompile was moved to this address already, it can't be overridden.
 		if _, ok := dirtyAddrs[addr]; ok {
 			return fmt.Errorf("account %s has already been overridden by a precompile", addr.Hex())
 		}
 		p, isPrecompile := precompiles[addr]
+		if p == vm.DisabledPrecompile {
+			isPrecompile = false
+		}
+		// A CAS20 address is routed to native code by prefix, not through this map,
+		// so a code override has to disable that routing explicitly.
+		if account.Code != nil && precompiles != nil && vm.IsCAS20Routed(addr) {
+			precompiles[addr] = vm.DisabledPrecompile
+		}
 		// The MoveTo feature makes it possible to move a precompile
 		// code to another address. If the target address is another precompile
 		// the code for the latter is lost for this session.

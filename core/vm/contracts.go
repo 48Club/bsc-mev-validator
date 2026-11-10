@@ -59,6 +59,17 @@ type PrecompiledContract interface {
 	Name() string
 }
 
+// BlockContextPrecompiledContract is an optional extension of
+// PrecompiledContract for precompiles that need read-only access to the
+// block context (e.g. the BEP-706 millisecond-timestamp precompile).
+// RunPrecompiledContract dispatches to RunWithBlockContext whenever a
+// precompile implements this interface, so Run is never reached on the
+// real call paths (Call/CallCode/DelegateCall/StaticCall).
+type BlockContextPrecompiledContract interface {
+	PrecompiledContract
+	RunWithBlockContext(blockCtx BlockContext, input []byte) ([]byte, error)
+}
+
 // PrecompiledContracts contains the precompiled contracts supported at the given fork.
 type PrecompiledContracts map[common.Address]PrecompiledContract
 
@@ -84,9 +95,11 @@ var PrecompiledContractsByzantium = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x8}): &bn256PairingByzantium{},
 }
 
-// PrecompiledContractsIstanbul contains the default set of pre-compiled Ethereum
-// contracts used in the Istanbul release.
-var PrecompiledContractsIstanbul = PrecompiledContracts{
+// PrecompiledContractsIstanbulForBSC is the Istanbul precompile set as active on
+// BSC (Parlia). By convention the "…ForBSC" maps carry BSC's cross-chain /
+// consensus precompiles; the standard same-named map is derived from it via
+// stripBSCPrecompiles and used for non-BSC chains.
+var PrecompiledContractsIstanbulForBSC = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x1}): &ecrecover{},
 	common.BytesToAddress([]byte{0x2}): &sha256hash{},
 	common.BytesToAddress([]byte{0x3}): &ripemd160hash{},
@@ -238,9 +251,9 @@ var PrecompiledContractsFeynman = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x69}): &secp256k1SignatureRecover{},
 }
 
-// PrecompiledContractsCancun contains the default set of pre-compiled Ethereum
-// contracts used in the Cancun release.
-var PrecompiledContractsCancun = PrecompiledContracts{
+// PrecompiledContractsCancunForBSC is the Cancun precompile set as active on BSC
+// (Parlia); see PrecompiledContractsIstanbulForBSC for the "…ForBSC" convention.
+var PrecompiledContractsCancunForBSC = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x1}):  &ecrecover{},
 	common.BytesToAddress([]byte{0x2}):  &sha256hash{},
 	common.BytesToAddress([]byte{0x3}):  &ripemd160hash{},
@@ -284,9 +297,9 @@ var PrecompiledContractsHaber = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{},
 }
 
-// PrecompiledContractsPrague contains the set of pre-compiled Ethereum
-// contracts used in the Prague release.
-var PrecompiledContractsPrague = PrecompiledContracts{
+// PrecompiledContractsPragueForBSC is the Prague precompile set as active on BSC
+// (Parlia); see PrecompiledContractsIstanbulForBSC for the "…ForBSC" convention.
+var PrecompiledContractsPragueForBSC = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x01}): &ecrecover{},
 	common.BytesToAddress([]byte{0x02}): &sha256hash{},
 	common.BytesToAddress([]byte{0x03}): &ripemd160hash{},
@@ -315,13 +328,13 @@ var PrecompiledContractsPrague = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{},
 }
 
-var PrecompiledContractsBLS = PrecompiledContractsPrague
+var PrecompiledContractsBLS = PrecompiledContractsPragueForBSC
 
 var PrecompiledContractsVerkle = PrecompiledContractsBerlin
 
-// PrecompiledContractsOsaka contains the set of pre-compiled Ethereum
-// contracts used in the Osaka release.
-var PrecompiledContractsOsaka = PrecompiledContracts{
+// PrecompiledContractsOsakaForBSC is the Osaka precompile set as active on BSC
+// (Parlia); see PrecompiledContractsIstanbulForBSC for the "…ForBSC" convention.
+var PrecompiledContractsOsakaForBSC = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x01}): &ecrecover{},
 	common.BytesToAddress([]byte{0x02}): &sha256hash{},
 	common.BytesToAddress([]byte{0x03}): &ripemd160hash{},
@@ -349,6 +362,35 @@ var PrecompiledContractsOsaka = PrecompiledContracts{
 
 	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{eip7951: true},
 }
+
+// stripBSCPrecompiles returns a copy of a BSC precompile set with the
+// BSC-specific cross-chain / consensus precompiles (0x64-0x69, plus any
+// address in `extra`) removed, yielding the upstream go-ethereum set. It lets
+// non-BSC chains (Parlia == nil) run the standard execution-spec / state tests
+// against the vanilla precompile set without patching contracts.go.
+func stripBSCPrecompiles(m PrecompiledContracts, extra ...common.Address) PrecompiledContracts {
+	c := maps.Clone(m)
+	for _, a := range []byte{0x64, 0x65, 0x66, 0x67, 0x68, 0x69} {
+		delete(c, common.BytesToAddress([]byte{a}))
+	}
+	for _, a := range extra {
+		delete(c, a)
+	}
+	return c
+}
+
+// Standard (non-BSC) precompile sets, derived from the BSC sets above by
+// dropping the BSC-specific precompiles. These match upstream go-ethereum and
+// are selected for non-BSC chains (!rules.IsInBSC).
+var (
+	PrecompiledContractsIstanbul = stripBSCPrecompiles(PrecompiledContractsIstanbulForBSC)
+	PrecompiledContractsCancun   = stripBSCPrecompiles(PrecompiledContractsCancunForBSC)
+	PrecompiledContractsOsaka    = stripBSCPrecompiles(PrecompiledContractsOsakaForBSC)
+	// Prague's 0x100 p256Verify is a BSC-only early adoption (upstream has no
+	// p256 precompile at Prague; it arrives at Osaka via EIP-7951), so drop it
+	// from the standard set too.
+	PrecompiledContractsPrague = stripBSCPrecompiles(PrecompiledContractsPragueForBSC, common.BytesToAddress([]byte{0x1, 0x00}))
+)
 
 // PrecompiledContractsPasteur contains the set of pre-compiled Ethereum
 // contracts used in the Pasteur release.
@@ -381,6 +423,43 @@ var PrecompiledContractsPasteur = PrecompiledContracts{
 	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{eip7951: true},
 }
 
+// PrecompiledContractsJenner contains the set of pre-compiled BSC contracts
+// used in the Jenner release. Built as a fresh map literal repeating every
+// entry of the prior fork's map — it must NOT alias another fork's map
+// (maps are reference types; an alias would leak 0x70 into the older fork
+// and activate it early).
+var PrecompiledContractsJenner = PrecompiledContracts{
+	common.BytesToAddress([]byte{0x01}): &ecrecover{},
+	common.BytesToAddress([]byte{0x02}): &sha256hash{},
+	common.BytesToAddress([]byte{0x03}): &ripemd160hash{},
+	common.BytesToAddress([]byte{0x04}): &dataCopy{},
+	common.BytesToAddress([]byte{0x05}): &bigModExp{eip2565: true, eip7823: true, eip7883: true},
+	common.BytesToAddress([]byte{0x06}): &bn256AddIstanbul{},
+	common.BytesToAddress([]byte{0x07}): &bn256ScalarMulIstanbul{},
+	common.BytesToAddress([]byte{0x08}): &bn256PairingIstanbul{},
+	common.BytesToAddress([]byte{0x09}): &blake2F{},
+	common.BytesToAddress([]byte{0x0a}): &kzgPointEvaluation{},
+	common.BytesToAddress([]byte{0x0b}): &bls12381G1Add{},
+	common.BytesToAddress([]byte{0x0c}): &bls12381G1MultiExp{},
+	common.BytesToAddress([]byte{0x0d}): &bls12381G2Add{},
+	common.BytesToAddress([]byte{0x0e}): &bls12381G2MultiExp{},
+	common.BytesToAddress([]byte{0x0f}): &bls12381Pairing{},
+	common.BytesToAddress([]byte{0x10}): &bls12381MapG1{},
+	common.BytesToAddress([]byte{0x11}): &bls12381MapG2{},
+
+	common.BytesToAddress([]byte{0x64}): &tmHeaderValidateDeprecated{},
+	common.BytesToAddress([]byte{0x65}): &iavlMerkleProofValidateDeprecated{},
+	common.BytesToAddress([]byte{0x66}): &blsSignatureVerify{},
+	common.BytesToAddress([]byte{0x67}): &cometBFTLightBlockValidatePasteur{},
+	common.BytesToAddress([]byte{0x68}): &verifyDoubleSignEvidenceJenner{},
+	common.BytesToAddress([]byte{0x69}): &secp256k1SignatureRecover{},
+
+	// BEP-706: millisecond-precision block timestamp, new in Jenner.
+	common.BytesToAddress([]byte{0x70}): &milliTimestamp{},
+
+	common.BytesToAddress([]byte{0x1, 0x00}): &p256Verify{eip7951: true},
+}
+
 // PrecompiledContractsP256Verify contains the precompiled Ethereum
 // contract specified in EIP-7212. This is exported for testing purposes.
 var PrecompiledContractsP256Verify = PrecompiledContracts{
@@ -388,22 +467,31 @@ var PrecompiledContractsP256Verify = PrecompiledContracts{
 }
 
 var (
-	PrecompiledAddressesPasteur   []common.Address
-	PrecompiledAddressesOsaka     []common.Address
-	PrecompiledAddressesPrague    []common.Address
-	PrecompiledAddressesHaber     []common.Address
-	PrecompiledAddressesCancun    []common.Address
-	PrecompiledAddressesFeynman   []common.Address
-	PrecompiledAddressesHertz     []common.Address
-	PrecompiledAddressesBerlin    []common.Address
-	PrecompiledAddressesPlato     []common.Address
-	PrecompiledAddressesLuban     []common.Address
-	PrecompiledAddressesPlanck    []common.Address
-	PrecompiledAddressesMoran     []common.Address
-	PrecompiledAddressesNano      []common.Address
-	PrecompiledAddressesIstanbul  []common.Address
-	PrecompiledAddressesByzantium []common.Address
-	PrecompiledAddressesHomestead []common.Address
+	PrecompiledAddressesJenner         []common.Address
+	PrecompiledAddressesPasteur        []common.Address
+	PrecompiledAddressesOsakaForBSC    []common.Address
+	PrecompiledAddressesPragueForBSC   []common.Address
+	PrecompiledAddressesHaber          []common.Address
+	PrecompiledAddressesCancunForBSC   []common.Address
+	PrecompiledAddressesFeynman        []common.Address
+	PrecompiledAddressesHertz          []common.Address
+	PrecompiledAddressesBerlin         []common.Address
+	PrecompiledAddressesPlato          []common.Address
+	PrecompiledAddressesLuban          []common.Address
+	PrecompiledAddressesPlanck         []common.Address
+	PrecompiledAddressesMoran          []common.Address
+	PrecompiledAddressesNano           []common.Address
+	PrecompiledAddressesIstanbulForBSC []common.Address
+	PrecompiledAddressesByzantium      []common.Address
+	PrecompiledAddressesHomestead      []common.Address
+
+	// Standard (non-BSC) address sets, matching upstream go-ethereum. Used for
+	// chains where Parlia is not configured (non-BSC, !rules.IsInBSC), e.g. the
+	// standard execution-spec / state tests.
+	PrecompiledAddressesIstanbul []common.Address
+	PrecompiledAddressesCancun   []common.Address
+	PrecompiledAddressesPrague   []common.Address
+	PrecompiledAddressesOsaka    []common.Address
 )
 
 func init() {
@@ -413,8 +501,8 @@ func init() {
 	for k := range PrecompiledContractsByzantium {
 		PrecompiledAddressesByzantium = append(PrecompiledAddressesByzantium, k)
 	}
-	for k := range PrecompiledContractsIstanbul {
-		PrecompiledAddressesIstanbul = append(PrecompiledAddressesIstanbul, k)
+	for k := range PrecompiledContractsIstanbulForBSC {
+		PrecompiledAddressesIstanbulForBSC = append(PrecompiledAddressesIstanbulForBSC, k)
 	}
 	for k := range PrecompiledContractsNano {
 		PrecompiledAddressesNano = append(PrecompiledAddressesNano, k)
@@ -440,11 +528,29 @@ func init() {
 	for k := range PrecompiledContractsFeynman {
 		PrecompiledAddressesFeynman = append(PrecompiledAddressesFeynman, k)
 	}
-	for k := range PrecompiledContractsCancun {
-		PrecompiledAddressesCancun = append(PrecompiledAddressesCancun, k)
+	for k := range PrecompiledContractsCancunForBSC {
+		PrecompiledAddressesCancunForBSC = append(PrecompiledAddressesCancunForBSC, k)
 	}
 	for k := range PrecompiledContractsHaber {
 		PrecompiledAddressesHaber = append(PrecompiledAddressesHaber, k)
+	}
+	for k := range PrecompiledContractsPragueForBSC {
+		PrecompiledAddressesPragueForBSC = append(PrecompiledAddressesPragueForBSC, k)
+	}
+	for k := range PrecompiledContractsOsakaForBSC {
+		PrecompiledAddressesOsakaForBSC = append(PrecompiledAddressesOsakaForBSC, k)
+	}
+	for k := range PrecompiledContractsJenner {
+		PrecompiledAddressesJenner = append(PrecompiledAddressesJenner, k)
+	}
+	for k := range PrecompiledContractsPasteur {
+		PrecompiledAddressesPasteur = append(PrecompiledAddressesPasteur, k)
+	}
+	for k := range PrecompiledContractsIstanbul {
+		PrecompiledAddressesIstanbul = append(PrecompiledAddressesIstanbul, k)
+	}
+	for k := range PrecompiledContractsCancun {
+		PrecompiledAddressesCancun = append(PrecompiledAddressesCancun, k)
 	}
 	for k := range PrecompiledContractsPrague {
 		PrecompiledAddressesPrague = append(PrecompiledAddressesPrague, k)
@@ -452,24 +558,36 @@ func init() {
 	for k := range PrecompiledContractsOsaka {
 		PrecompiledAddressesOsaka = append(PrecompiledAddressesOsaka, k)
 	}
-	for k := range PrecompiledContractsPasteur {
-		PrecompiledAddressesPasteur = append(PrecompiledAddressesPasteur, k)
-	}
 }
 
 func activePrecompiledContracts(rules params.Rules) PrecompiledContracts {
 	switch {
-	case rules.IsVerkle:
+	// UBT (binary-tree devnet experiment) deliberately stays above Jenner:
+	// it already shadows every BSC fork's precompile set (see IsPasteur
+	// below), and Jenner keeps that pre-existing precedence instead of
+	// silently swapping an active UBT set for a Pasteur-derived one.
+	case rules.IsUBT:
 		return PrecompiledContractsVerkle
+	case rules.IsJenner:
+		return PrecompiledContractsJenner
 	case rules.IsPasteur:
 		return PrecompiledContractsPasteur
 	case rules.IsOsaka:
+		if rules.IsInBSC {
+			return PrecompiledContractsOsakaForBSC
+		}
 		return PrecompiledContractsOsaka
 	case rules.IsPrague:
+		if rules.IsInBSC {
+			return PrecompiledContractsPragueForBSC
+		}
 		return PrecompiledContractsPrague
 	case rules.IsHaber:
 		return PrecompiledContractsHaber
 	case rules.IsCancun:
+		if rules.IsInBSC {
+			return PrecompiledContractsCancunForBSC
+		}
 		return PrecompiledContractsCancun
 	case rules.IsFeynman:
 		return PrecompiledContractsFeynman
@@ -488,6 +606,9 @@ func activePrecompiledContracts(rules params.Rules) PrecompiledContracts {
 	case rules.IsNano:
 		return PrecompiledContractsNano
 	case rules.IsIstanbul:
+		if rules.IsInBSC {
+			return PrecompiledContractsIstanbulForBSC
+		}
 		return PrecompiledContractsIstanbul
 	case rules.IsByzantium:
 		return PrecompiledContractsByzantium
@@ -504,15 +625,26 @@ func ActivePrecompiledContracts(rules params.Rules) PrecompiledContracts {
 // ActivePrecompiles returns the precompile addresses enabled with the current configuration.
 func ActivePrecompiles(rules params.Rules) []common.Address {
 	switch {
+	case rules.IsJenner:
+		return PrecompiledAddressesJenner
 	case rules.IsPasteur:
 		return PrecompiledAddressesPasteur
 	case rules.IsOsaka:
+		if rules.IsInBSC {
+			return PrecompiledAddressesOsakaForBSC
+		}
 		return PrecompiledAddressesOsaka
 	case rules.IsPrague:
+		if rules.IsInBSC {
+			return PrecompiledAddressesPragueForBSC
+		}
 		return PrecompiledAddressesPrague
 	case rules.IsHaber:
 		return PrecompiledAddressesHaber
 	case rules.IsCancun:
+		if rules.IsInBSC {
+			return PrecompiledAddressesCancunForBSC
+		}
 		return PrecompiledAddressesCancun
 	case rules.IsFeynman:
 		return PrecompiledAddressesFeynman
@@ -531,6 +663,9 @@ func ActivePrecompiles(rules params.Rules) []common.Address {
 	case rules.IsNano:
 		return PrecompiledAddressesNano
 	case rules.IsIstanbul:
+		if rules.IsInBSC {
+			return PrecompiledAddressesIstanbulForBSC
+		}
 		return PrecompiledAddressesIstanbul
 	case rules.IsByzantium:
 		return PrecompiledAddressesByzantium
@@ -542,19 +677,32 @@ func ActivePrecompiles(rules params.Rules) []common.Address {
 // RunPrecompiledContract runs and evaluates the output of a precompiled contract.
 // It returns
 // - the returned bytes,
-// - the _remaining_ gas,
+// - the remaining gas budget,
 // - any error that occurred
-func RunPrecompiledContract(p PrecompiledContract, input []byte, suppliedGas uint64, logger *tracing.Hooks) (ret []byte, remainingGas uint64, err error) {
+func RunPrecompiledContract(stateDB StateDB, p PrecompiledContract, address common.Address, input []byte, gas GasBudget, logger *tracing.Hooks, rules params.Rules, blockCtx BlockContext) (ret []byte, remaining GasBudget, err error) {
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, ErrOutOfGas
+	prior, ok := gas.Charge(GasCosts{RegularGas: gasCost})
+	if !ok {
+		gas.Exhaust()
+		return nil, gas, ErrOutOfGas
 	}
 	if logger != nil && logger.OnGasChange != nil {
-		logger.OnGasChange(suppliedGas, suppliedGas-gasCost, tracing.GasChangeCallPrecompiledContract)
+		logger.OnGasChange(prior, gas.RegularGas, tracing.GasChangeCallPrecompiledContract)
 	}
-	suppliedGas -= gasCost
+	// Touch the precompile for block-level accessList recording once Amsterdam
+	// fork is activated.
+	if rules.IsAmsterdam {
+		stateDB.Touch(address)
+	}
+	// Precompiles that need the block context implement the optional
+	// BlockContextPrecompiledContract interface and are dispatched here;
+	// every other precompile keeps the plain Run(input) path.
+	if bp, ok := p.(BlockContextPrecompiledContract); ok {
+		output, err := bp.RunWithBlockContext(blockCtx, input)
+		return output, gas, err
+	}
 	output, err := p.Run(input)
-	return output, suppliedGas, err
+	return output, gas, err
 }
 
 // ecrecover implemented as a native contract.
@@ -581,11 +729,11 @@ func (c *ecrecover) Run(input []byte) ([]byte, error) {
 	}
 	// We must make sure not to modify the 'input', so placing the 'v' along with
 	// the signature needs to be done on a new allocation
-	sig := make([]byte, 65)
-	copy(sig, input[64:128])
+	var sig [65]byte
+	copy(sig[:], input[64:128])
 	sig[64] = v
 	// v needs to be at the end for libsecp256k1
-	pubKey, err := crypto.Ecrecover(input[:32], sig)
+	pubKey, err := crypto.Ecrecover(input[:32], sig[:])
 	// make sure the public key is a valid one
 	if err != nil {
 		return nil, nil
@@ -876,7 +1024,6 @@ func (c *bigModExp) RequiredGas(input []byte) uint64 {
 		if expLen > 32 {
 			expHead.SetBytes(getData(input, baseLen, 32))
 		} else {
-			// TODO: Check that if expLen < baseLen, then getData will return an empty slice
 			expHead.SetBytes(getData(input, baseLen, expLen))
 		}
 	}
@@ -1828,6 +1975,17 @@ type verifyDoubleSignEvidence struct{}
 // RequiredGas returns the gas required to execute the pre-compiled contract.
 func (c *verifyDoubleSignEvidence) RequiredGas(input []byte) uint64 {
 	return params.DoubleSignEvidenceVerifyGas
+}
+
+// verifyDoubleSignEvidenceJenner prices the double-sign evidence precompile per input
+// byte from the Jenner fork, so oversized RLP-encoded headers cannot impose unbounded
+// SealHash work for a flat fee. The verification logic is inherited unchanged.
+type verifyDoubleSignEvidenceJenner struct {
+	verifyDoubleSignEvidence
+}
+
+func (c *verifyDoubleSignEvidenceJenner) RequiredGas(input []byte) uint64 {
+	return params.DoubleSignEvidenceVerifyGas + uint64(len(input))*params.DoubleSignEvidenceVerifyPerByteGas
 }
 
 type DoubleSignEvidence struct {

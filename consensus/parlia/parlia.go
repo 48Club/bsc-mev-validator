@@ -93,13 +93,15 @@ var (
 	diffInTurn = big.NewInt(2) // Block difficulty for in-turn signatures
 	diffNoTurn = big.NewInt(1) // Block difficulty for out-of-turn signatures
 	// 100 native token
-	maxSystemBalance                  = new(uint256.Int).Mul(uint256.NewInt(100), uint256.NewInt(params.Ether))
-	verifyVoteAttestationErrorCounter = metrics.NewRegisteredCounter("parlia/verifyVoteAttestation/error", nil)
-	updateAttestationErrorCounter     = metrics.NewRegisteredCounter("parlia/updateAttestation/error", nil)
-	validVotesfromSelfCounter         = metrics.NewRegisteredCounter("parlia/VerifyVote/self", nil)
-	doubleSignCounter                 = metrics.NewRegisteredCounter("parlia/doublesign", nil)
-	intentionalDelayMiningCounter     = metrics.NewRegisteredCounter("parlia/intentionalDelayMining", nil)
-	attestationVoteCountGauge         = metrics.NewRegisteredGauge("parlia/attestation/voteCount", nil)
+	maxSystemBalance                    = new(uint256.Int).Mul(uint256.NewInt(100), uint256.NewInt(params.Ether))
+	verifyVoteAttestationErrorCounter   = metrics.NewRegisteredCounter("parlia/verifyVoteAttestation/error", nil)
+	updateAttestationErrorCounter       = metrics.NewRegisteredCounter("parlia/updateAttestation/error", nil)
+	assembleVoteAttestationErrorCounter = metrics.NewRegisteredCounter("parlia/assembleVoteAttestation/error", nil)
+	assembleVoteAttestationSkipCounter  = metrics.NewRegisteredCounter("parlia/assembleVoteAttestation/skip", nil)
+	validVotesfromSelfCounter           = metrics.NewRegisteredCounter("parlia/VerifyVote/self", nil)
+	doubleSignCounter                   = metrics.NewRegisteredCounter("parlia/doublesign", nil)
+	intentionalDelayMiningCounter       = metrics.NewRegisteredCounter("parlia/intentionalDelayMining", nil)
+	attestationVoteCountGauge           = metrics.NewRegisteredGauge("parlia/attestation/voteCount", nil)
 
 	systemContracts = map[common.Address]bool{
 		common.HexToAddress(systemcontracts.ValidatorContract):          true,
@@ -661,6 +663,31 @@ func (p *Parlia) VerifyUnsealedHeader(chain consensus.ChainHeaderReader, header 
 		}
 	}
 
+	// BlockAccessListHash (EIP-7928) and SlotNumber (EIP-7843) are trailing
+	// rlp:"optional" fields that the block seal does not commit to. Before
+	// Amsterdam they must be absent: honest blocks never set them, so without
+	// this check an unprivileged peer could append a crafted value to a
+	// validator-signed block, changing its block hash while leaving the seal
+	// valid. From Amsterdam they are required; their content is then bound by
+	// state validation (BlockAccessListHash is recomputed from execution) and
+	// the slot rules, not by the seal.
+	amsterdam := chain.Config().IsAmsterdam(header.Number, header.Time)
+	if !amsterdam {
+		if header.BlockAccessListHash != nil {
+			return fmt.Errorf("invalid BlockAccessListHash, have %#x, expected nil", header.BlockAccessListHash)
+		}
+		if header.SlotNumber != nil {
+			return fmt.Errorf("invalid SlotNumber, have %d, expected nil", *header.SlotNumber)
+		}
+	} else {
+		if header.BlockAccessListHash == nil {
+			return errors.New("header has nil BlockAccessListHash after Amsterdam")
+		}
+		if header.SlotNumber == nil {
+			return errors.New("header has nil SlotNumber after Amsterdam")
+		}
+	}
+
 	// All basic checks passed, verify cascading fields
 	return p.verifyCascadingFields(chain, header, parents)
 }
@@ -1084,6 +1111,11 @@ func (p *Parlia) assembleVoteAttestation(chain consensus.ChainHeaderReader, head
 		}
 	}
 	if targetHeaderParentSnap == nil {
+		// Not an error: quorum votes for a recent enough target simply haven't
+		// arrived yet by sealing time. Counted separately from real assemble
+		// errors so operators can distinguish "still catching up on votes"
+		// from an actual, persistent assembly failure.
+		assembleVoteAttestationSkipCounter.Inc(1)
 		return nil
 	}
 
@@ -1766,8 +1798,13 @@ func (p *Parlia) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 		err := p.assembleVoteAttestation(chain, header)
 		if err != nil {
 			/* If the vote attestation can't be assembled successfully, the blockchain won't get
-			   fast finalized, but it can be tolerated, so just report this error here. */
-			log.Debug("Assemble vote attestation failed when sealing", "err", err)
+			   fast finalized, but it can be tolerated, so just report this error here. This is a
+			   genuine assemble failure (not the routine "quorum votes not in yet" case, which
+			   returns nil and is tracked separately via assembleVoteAttestationSkipCounter), so
+			   it's worth surfacing above Debug and counting for alerting, symmetric to
+			   verifyVoteAttestationErrorCounter on the import side. */
+			assembleVoteAttestationErrorCounter.Inc(1)
+			log.Warn("Assemble vote attestation failed when sealing", "err", err)
 		}
 
 		// Sign all the things!
@@ -2101,8 +2138,8 @@ func (p *Parlia) getSystemMessage(from, toAddress common.Address, data []byte, v
 	return &core.Message{
 		From:     from,
 		GasLimit: math.MaxUint64 / 2,
-		GasPrice: big.NewInt(0),
-		Value:    value,
+		GasPrice: new(uint256.Int),
+		Value:    uint256.MustFromBig(value),
 		To:       &toAddress,
 		Data:     data,
 	}
@@ -2118,7 +2155,7 @@ func (p *Parlia) applyTransaction(
 	tracer *tracing.Hooks,
 ) (applyErr error) {
 	nonce := state.GetNonce(msg.From)
-	expectedTx := types.NewTransaction(nonce, *msg.To, msg.Value, msg.GasLimit, msg.GasPrice, msg.Data)
+	expectedTx := types.NewTransaction(nonce, *msg.To, msg.Value.ToBig(), msg.GasLimit, msg.GasPrice.ToBig(), msg.Data)
 	expectedHash := p.signer.Hash(expectedTx)
 
 	switch mode {
@@ -2200,7 +2237,13 @@ func (p *Parlia) applyTransaction(
 		root = state.IntermediateRoot(p.chainConfig.IsEIP158(header.Number)).Bytes()
 	}
 	*usedGas += gasUsed
-	tracingReceipt = types.NewReceipt(root, false, *usedGas)
+	// Continue the receipt (refund-inclusive) chain from the previous receipt;
+	// usedGas carries the block-level (refund-exclusive, EIP-7778) chain.
+	cumulativeGasUsed := gasUsed
+	if n := len(*receipts); n > 0 {
+		cumulativeGasUsed += (*receipts)[n-1].CumulativeGasUsed
+	}
+	tracingReceipt = types.NewReceipt(root, false, cumulativeGasUsed)
 	tracingReceipt.TxHash = expectedTx.Hash()
 	tracingReceipt.GasUsed = gasUsed
 
@@ -2496,17 +2539,18 @@ func applyMessage(
 		state.ClearAccessList()
 	}
 
-	ret, returnGas, err := evm.Call(
+	gasBudget := vm.NewGasBudget(msg.GasLimit)
+	ret, leftOverGas, err := evm.Call(
 		msg.From,
 		*msg.To,
 		msg.Data,
-		msg.GasLimit,
-		uint256.MustFromBig(msg.Value),
+		gasBudget,
+		msg.Value,
 	)
 	if err != nil {
 		log.Error("apply message failed", "msg", string(ret), "err", err)
 	}
-	return msg.GasLimit - returnGas, err
+	return leftOverGas.Used(gasBudget), err
 }
 
 // proposalKey build a key which is a combination of the block number and the proposer address.

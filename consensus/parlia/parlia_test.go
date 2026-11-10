@@ -643,9 +643,120 @@ var (
 	testAddr   = crypto.PubkeyToAddress(testKey.PublicKey)
 )
 
+func TestIsSystemTransaction(t *testing.T) {
+	chainID := big.NewInt(56)
+	engine := &Parlia{signer: types.NewPragueSigner(chainID)}
+	header := &types.Header{Coinbase: testAddr}
+	system := common.HexToAddress(systemcontracts.ValidatorContract)
+	other := common.HexToAddress("0x1234")
+	otherKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := types.SignSetCode(testKey, types.SetCodeAuthorization{ChainID: *uint256.MustFromBig(chainID), Address: other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dynamic := func(to *common.Address, tip int64) types.TxData {
+		return &types.DynamicFeeTx{
+			ChainID: chainID, To: to, Gas: 100000,
+			GasFeeCap: big.NewInt(10), GasTipCap: big.NewInt(tip),
+		}
+	}
+	setCode := &types.SetCodeTx{
+		ChainID: uint256.MustFromBig(chainID), To: system, Gas: 100000,
+		GasFeeCap: uint256.NewInt(10), AuthList: []types.SetCodeAuthorization{auth},
+	}
+	for _, tc := range []struct {
+		name    string
+		data    types.TxData
+		key     *ecdsa.PrivateKey
+		want    bool
+		wantErr bool
+	}{
+		{"legacy zero price", &types.LegacyTx{To: &system, Gas: 100000}, testKey, true, false},
+		{"legacy paid", &types.LegacyTx{To: &system, Gas: 100000, GasPrice: big.NewInt(1)}, testKey, false, false},
+		{"zero tip positive fee cap", dynamic(&system, 0), testKey, true, false},
+		{"positive tip", dynamic(&system, 1), testKey, false, false},
+		{"other sender", dynamic(&system, 0), otherKey, false, false},
+		{"other recipient", dynamic(&other, 0), testKey, false, false},
+		{"contract creation", dynamic(nil, 0), testKey, false, false},
+		{"invalid signature", dynamic(&system, 0), nil, false, true},
+		{"7702 coinbase sender", setCode, testKey, true, false},
+		{"7702 coinbase authority only", setCode, otherKey, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := types.NewTx(tc.data)
+			if tc.key != nil {
+				var err error
+				tx, err = types.SignTx(tx, engine.signer, tc.key)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := engine.IsSystemTransaction(tx, header)
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("IsSystemTransaction = (%v, %v), want (%v, error=%v)", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestVerifyHeaderRejectsAmsterdamFieldsBeforeFork(t *testing.T) {
+	config := &params.ChainConfig{ChainID: big.NewInt(56), Parlia: &params.ParliaConfig{}}
+	parent := &types.Header{Number: big.NewInt(0), GasLimit: 30_000_000, Time: 1}
+	chain := &finalizedHeaderChain{
+		cfg:    config,
+		byHash: map[common.Hash]*types.Header{parent.Hash(): parent},
+	}
+	engine := New(config, nil, nil, parent.Hash())
+	engine.recentSnaps.Add(parent.Hash(), newSnapshot(config.Parlia, engine.signatures, 0, parent.Hash(), []common.Address{testAddr}, nil, nil))
+	header := &types.Header{
+		ParentHash: parent.Hash(),
+		Number:     big.NewInt(1),
+		Coinbase:   testAddr,
+		UncleHash:  types.EmptyUncleHash,
+		Difficulty: new(big.Int).Set(diffInTurn),
+		GasLimit:   parent.GasLimit,
+		Time:       4,
+		Extra:      make([]byte, extraVanity+extraSeal),
+	}
+	hash := types.SealHash(header, config.ChainID)
+	sig, err := crypto.Sign(hash[:], testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(header.Extra[len(header.Extra)-extraSeal:], sig)
+	if err := engine.VerifyHeader(chain, header); err != nil {
+		t.Fatalf("valid header rejected: %v", err)
+	}
+
+	zeroHash, nonzeroHash := common.Hash{}, common.HexToHash("0x01")
+	zeroSlot, nonzeroSlot := uint64(0), uint64(200)
+	for _, tc := range []struct {
+		name string
+		bal  *common.Hash
+		slot *uint64
+		want string
+	}{
+		{"BAL/zero", &zeroHash, nil, "invalid BlockAccessListHash"},
+		{"BAL/nonzero", &nonzeroHash, nil, "invalid BlockAccessListHash"},
+		{"slot/zero", nil, &zeroSlot, "invalid SlotNumber"},
+		{"slot/nonzero", nil, &nonzeroSlot, "invalid SlotNumber"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := types.CopyHeader(header)
+			invalid.BlockAccessListHash, invalid.SlotNumber = tc.bal, tc.slot
+			if err := engine.VerifyHeader(chain, invalid); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("VerifyHeader returned %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestParlia_applyTransactionTracing(t *testing.T) {
 	frdir := t.TempDir()
-	db, err := rawdb.NewDatabaseWithFreezer(rawdb.NewMemoryDatabase(), frdir, "", false)
+	db, err := rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: frdir})
 	if err != nil {
 		t.Fatalf("failed to create database with ancient backend")
 	}
@@ -696,7 +807,7 @@ func TestParlia_applyTransactionTracing(t *testing.T) {
 
 	msg := engine.getSystemMessage(genesisBlock.Coinbase(), common.HexToAddress(systemcontracts.ValidatorContract), data, common.Big0)
 	nonce := stateDB.GetNonce(msg.From)
-	expectedTx := types.NewTransaction(nonce, *msg.To, msg.Value, msg.GasLimit, msg.GasPrice, msg.Data)
+	expectedTx := types.NewTransaction(nonce, *msg.To, msg.Value.ToBig(), msg.GasLimit, msg.GasPrice.ToBig(), msg.Data)
 
 	receivedTxs := []*types.Transaction{expectedTx}
 	txs := make([]*types.Transaction, 0, 1)
@@ -729,7 +840,7 @@ func TestParlia_applyTransactionTracing(t *testing.T) {
 
 func TestParlia_applyTransactionModes(t *testing.T) {
 	frdir := t.TempDir()
-	db, err := rawdb.NewDatabaseWithFreezer(rawdb.NewMemoryDatabase(), frdir, "", false)
+	db, err := rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: frdir})
 	if err != nil {
 		t.Fatalf("failed to create database with ancient backend: %v", err)
 	}
@@ -779,7 +890,7 @@ func TestParlia_applyTransactionModes(t *testing.T) {
 	}
 	expectedTx := func(stateDB *state.StateDB) *types.Transaction {
 		nonce := stateDB.GetNonce(msg.From)
-		return types.NewTransaction(nonce, *msg.To, msg.Value, msg.GasLimit, msg.GasPrice, msg.Data)
+		return types.NewTransaction(nonce, *msg.To, msg.Value.ToBig(), msg.GasLimit, msg.GasPrice.ToBig(), msg.Data)
 	}
 	apply := func(t *testing.T, stateDB *state.StateDB, receivedTxs *[]*types.Transaction, mode systemTxMode) ([]*types.Transaction, error) {
 		t.Helper()
@@ -867,10 +978,85 @@ func isUnsignedTx(tx *types.Transaction) bool {
 	return v.Sign() == 0 && r.Sign() == 0 && s.Sign() == 0
 }
 
+// TestParlia_applyTransactionReceiptCumulativeGas verifies that a system
+// receipt continues the cumulative gas chain from the previous receipt rather
+// than from usedGas, which carries the block-level chain and runs ahead of the
+// receipt chain by the accumulated refunds after EIP-7778 (Amsterdam).
+func TestParlia_applyTransactionReceiptCumulativeGas(t *testing.T) {
+	frdir := t.TempDir()
+	db, err := rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: frdir})
+	if err != nil {
+		t.Fatalf("failed to create database with ancient backend: %v", err)
+	}
+
+	trieDB := triedb.NewDatabase(db, nil)
+	defer trieDB.Close()
+
+	config := params.ParliaTestChainConfig
+	gspec := &core.Genesis{
+		Config: config,
+		Alloc:  types.GenesisAlloc{testAddr: {Balance: new(big.Int).SetUint64(10 * params.Ether)}},
+	}
+	mockEngine := &mockParlia{}
+	genesisBlock := gspec.MustCommit(db, trieDB)
+	chain, _ := core.NewBlockChain(db, gspec, mockEngine, nil)
+	defer chain.Stop()
+	parents, _ := core.GenerateChain(config, genesisBlock, mockEngine, db, 1, nil)
+	header := parents[0].Header()
+
+	engine := New(config, db, nil, genesisBlock.Hash())
+	validatorKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("failed to generate validator key: %v", err)
+	}
+	validator := crypto.PubkeyToAddress(validatorKey.PublicKey)
+	engine.Authorize(validator, nil, func(account accounts.Account, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error) {
+		return types.SignTx(tx, types.LatestSigner(config), validatorKey)
+	})
+
+	data, err := engine.validatorSetABI.Pack("distributeFinalityReward", make([]common.Address, 0), make([]*big.Int, 0))
+	if err != nil {
+		t.Fatalf("failed to pack system contract method: %v", err)
+	}
+	msg := engine.getSystemMessage(validator, common.HexToAddress(systemcontracts.ValidatorContract), data, common.Big0)
+	cx := chainContext{ChainHeaderReader: chain, parlia: engine}
+
+	stateDB, err := state.New(genesisBlock.Root(), state.NewDatabase(trieDB, nil))
+	if err != nil {
+		t.Fatalf("failed to create stateDB: %v", err)
+	}
+
+	// Seed the two chains with diverged bases, mirroring post-Amsterdam blocks
+	// where the block-level chain runs ahead by the accumulated refunds.
+	const (
+		receiptBase = uint64(120_000)
+		blockBase   = uint64(150_000)
+	)
+	txs := make([]*types.Transaction, 0, 1)
+	receipts := []*types.Receipt{{CumulativeGasUsed: receiptBase}}
+	usedGas := blockBase
+
+	if err := engine.applyTransaction(msg, stateDB, header, cx, &txs, &receipts, nil, &usedGas, systemTxMining, nil); err != nil {
+		t.Fatalf("failed to apply system transaction: %v", err)
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("expected two receipts, got %d", len(receipts))
+	}
+	sys := receipts[1]
+	sysGas := usedGas - blockBase
+	if sys.GasUsed != sysGas {
+		t.Errorf("system receipt gas: got %d, want %d", sys.GasUsed, sysGas)
+	}
+	if want := receiptBase + sysGas; sys.CumulativeGasUsed != want {
+		t.Errorf("system receipt cumulative gas: got %d, want %d (must continue the receipt chain, not the block chain at %d)",
+			sys.CumulativeGasUsed, want, blockBase+sysGas)
+	}
+}
+
 // TestParliaFinalizeAndAssembleBidBlock verifies BidBlock assembly emits unsigned system txs.
 func TestParliaFinalizeAndAssembleBidBlock(t *testing.T) {
 	frdir := t.TempDir()
-	db, err := rawdb.NewDatabaseWithFreezer(rawdb.NewMemoryDatabase(), frdir, "", false)
+	db, err := rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: frdir})
 	if err != nil {
 		t.Fatalf("failed to create database with ancient backend: %v", err)
 	}
@@ -961,7 +1147,7 @@ func TestParliaFinalizeAndAssembleBidBlock(t *testing.T) {
 
 func TestParliaFinalizeAndAssembleBidBlockRewardsHeaderCoinbase(t *testing.T) {
 	frdir := t.TempDir()
-	db, err := rawdb.NewDatabaseWithFreezer(rawdb.NewMemoryDatabase(), frdir, "", false)
+	db, err := rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: frdir})
 	if err != nil {
 		t.Fatalf("failed to create database with ancient backend: %v", err)
 	}
@@ -1033,7 +1219,7 @@ func TestParliaFinalizeAndAssembleBidBlockRewardsHeaderCoinbase(t *testing.T) {
 
 func TestParliaPrepareForBidBlock(t *testing.T) {
 	frdir := t.TempDir()
-	db, err := rawdb.NewDatabaseWithFreezer(rawdb.NewMemoryDatabase(), frdir, "", false)
+	db, err := rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: frdir})
 	if err != nil {
 		t.Fatalf("failed to create database with ancient backend: %v", err)
 	}

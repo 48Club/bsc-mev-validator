@@ -592,6 +592,9 @@ func testGetBlockReceipts(t *testing.T, protocol uint) {
 	peer, _ := newTestPeer("peer", protocol, backend)
 	defer peer.close()
 
+	// Drop the stored receipts of the empty block 3, it should still be served
+	rawdb.DeleteReceipts(backend.db, backend.chain.GetCanonicalHash(3), 3)
+
 	// Collect the hashes to request, and the response to expect
 	var (
 		hashes   []common.Hash
@@ -605,13 +608,110 @@ func testGetBlockReceipts(t *testing.T, protocol uint) {
 	}
 
 	// Send the hash request and verify the response
-	p2p.Send(peer.app, GetReceiptsMsg, &GetReceiptsPacket{
+	p2p.Send(peer.app, GetReceiptsMsg, &GetReceiptsPacket68{
 		RequestId:          123,
 		GetReceiptsRequest: hashes,
 	})
 	if err := p2p.ExpectMsg(peer.app, ReceiptsMsg, &ReceiptsPacket[*ReceiptList68]{
 		RequestId: 123,
 		List:      receipts,
+	}); err != nil {
+		t.Errorf("receipts mismatch: %v", err)
+	}
+}
+
+func TestGetBlockPartialReceipts(t *testing.T) { testGetBlockPartialReceipts(t, ETH70) }
+
+func testGetBlockPartialReceipts(t *testing.T, protocol int) {
+	// First, generate the chain and overwrite the receipts.
+	generator := func(_ int, block *core.BlockGen) {
+		for j := 0; j < 5; j++ {
+			tx, err := types.SignTx(
+				types.NewTransaction(block.TxNonce(testAddr), testAddr, big.NewInt(1000), params.TxGas, block.BaseFee(), nil),
+				types.LatestSignerForChainID(params.TestChainConfig.ChainID),
+				testKey,
+			)
+			if err != nil {
+				t.Fatalf("failed to sign tx: %v", err)
+			}
+			block.AddTx(tx)
+		}
+	}
+	backend := newTestBackendWithGenerator(4, true, false, generator)
+	defer backend.close()
+
+	blockCutoff := 2
+	receiptCutoff := 4
+
+	// Replace the receipts in the database with larger receipts.
+	targetBlock := backend.chain.GetBlockByNumber(uint64(blockCutoff))
+	receipts := backend.chain.GetReceiptsByHash(targetBlock.Hash())
+	receiptSize := params.MaxTxGas / params.LogDataGas // ~2MiB per receipt
+	for i := range receipts {
+		payload := make([]byte, receiptSize)
+		for j := range payload {
+			payload[j] = byte(i + j)
+		}
+		receipts[i].Logs = []*types.Log{
+			{
+				Address: common.BytesToAddress([]byte{byte(i + 1)}),
+				Data:    payload,
+			},
+		}
+	}
+
+	rawdb.WriteReceipts(backend.db, targetBlock.Hash(), targetBlock.NumberU64(), receipts)
+
+	peer, _ := newTestPeer("peer", uint(protocol), backend)
+	defer peer.close()
+
+	var (
+		hashes         []common.Hash
+		partialReceipt []*ReceiptList
+	)
+	for i := uint64(0); i <= backend.chain.CurrentBlock().Number.Uint64(); i++ {
+		block := backend.chain.GetBlockByNumber(i)
+		hashes = append(hashes, block.Hash())
+	}
+	for i := 0; i <= blockCutoff; i++ {
+		block := backend.chain.GetBlockByNumber(uint64(i))
+		trs := backend.chain.GetReceiptsByHash(block.Hash())
+		limit := len(trs)
+		if i == blockCutoff {
+			limit = receiptCutoff
+		}
+		partialReceipt = append(partialReceipt, NewReceiptList(trs[:limit]))
+	}
+
+	rawPartialReceipt, _ := rlp.EncodeToRawList(partialReceipt)
+
+	p2p.Send(peer.app, GetReceiptsMsg, &GetReceiptsPacket70{
+		RequestId:              123,
+		FirstBlockReceiptIndex: 0,
+		GetReceiptsRequest:     hashes,
+	})
+	if err := p2p.ExpectMsg(peer.app, ReceiptsMsg, &ReceiptsPacket70{
+		RequestId:           123,
+		LastBlockIncomplete: true,
+		List:                rawPartialReceipt,
+	}); err != nil {
+		t.Errorf("receipts mismatch: %v", err)
+	}
+
+	// Simulate the continued request
+	partialReceipt = []*ReceiptList{NewReceiptList(receipts[receiptCutoff:])}
+	rawPartialReceipt, _ = rlp.EncodeToRawList(partialReceipt)
+
+	p2p.Send(peer.app, GetReceiptsMsg, &GetReceiptsPacket70{
+		RequestId:              123,
+		FirstBlockReceiptIndex: uint64(receiptCutoff),
+		GetReceiptsRequest:     []common.Hash{hashes[blockCutoff]},
+	})
+
+	if err := p2p.ExpectMsg(peer.app, ReceiptsMsg, &ReceiptsPacket70{
+		RequestId:           123,
+		LastBlockIncomplete: false,
+		List:                rawPartialReceipt,
 	}); err != nil {
 		t.Errorf("receipts mismatch: %v", err)
 	}
@@ -679,10 +779,10 @@ func setup() (*testBackend, *testPeer) {
 }
 
 func FuzzEthProtocolHandlers(f *testing.F) {
-	handlers := eth69
+	handlers := eth70
 	backend, peer := setup()
 	f.Fuzz(func(t *testing.T, code byte, msg []byte) {
-		handler := handlers[uint64(code)%protocolLengths[ETH69]]
+		handler := handlers[uint64(code)%protocolLengths[ETH70]]
 		if handler == nil {
 			return
 		}
@@ -802,7 +902,7 @@ func TestHandleNewBlock(t *testing.T) {
 	defer p2pEthSrc.Close()
 	defer p2pEthSink.Close()
 
-	localEth := NewPeer(ETH68, p2p.NewPeerWithProtocols(enode.ID{1}, protos, "", caps), p2pEthSrc, nil)
+	localEth := NewPeer(ETH68, p2p.NewPeerWithProtocols(enode.ID{1}, protos, "", caps), p2pEthSrc, nil, backend.chain.Config())
 
 	// Run the tests
 	for _, tc := range testCases {
@@ -810,6 +910,48 @@ func TestHandleNewBlock(t *testing.T) {
 			err := handleNewBlock(backend, tc.msg, localEth)
 			if err != tc.err {
 				t.Errorf("expected error %v, got %v", tc.err, err)
+			}
+		})
+	}
+}
+
+func TestHandleNewBlockhashes(t *testing.T) {
+	t.Parallel()
+
+	backend := newTestBackendWithGenerator(1, false, false, nil)
+	defer backend.close()
+
+	localEth := NewPeer(ETH68, p2p.NewPeer(enode.ID{1}, "peer", nil), nil, nil, backend.chain.Config())
+
+	newPacket := func(n int) NewBlockHashesPacket {
+		ann := make(NewBlockHashesPacket, n)
+		for i := range ann {
+			ann[i].Hash = common.Hash{byte(i), byte(i >> 8)}
+			ann[i].Number = uint64(i)
+		}
+		return ann
+	}
+	msgFor := func(ann NewBlockHashesPacket) p2p.Msg {
+		size, r, _ := rlp.EncodeToReader(ann)
+		return p2p.Msg{Code: NewBlockHashesMsg, Size: uint32(size), Payload: r}
+	}
+
+	testCases := []struct {
+		name    string
+		count   int
+		wantErr bool
+	}{
+		{"at limit", maxNewBlockHashes, false},
+		{"over limit", maxNewBlockHashes + 1, true},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := handleNewBlockhashes(backend, msgFor(newPacket(tc.count)), localEth)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for %d announcements, got nil", tc.count)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for %d announcements: %v", tc.count, err)
 			}
 		})
 	}

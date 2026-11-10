@@ -30,10 +30,10 @@ const (
 	PayBidTxGasLimit     uint64 = 25000              // Gas limit of the PayBidTx in the builder.BidArgs.
 	MaxTxGas             uint64 = 1 << 24            // Maximum transaction gas limit after eip-7825 (16,777,216).
 
-	MaximumExtraDataSize  uint64 = 32       // Maximum size extra data may be after Genesis.
-	ForkIDSize            uint64 = 4        // The length of fork id
-	ExpByteGas            uint64 = 10       // Times ceil(log256(exponent)) for the EXP instruction.
-	SloadGas              uint64 = 50       // Multiplied by the number of 32-byte words that are copied (round up) for any *COPY operation and added.
+	MaximumExtraDataSize  uint64 = 32 // Maximum size extra data may be after Genesis.
+	ForkIDSize            uint64 = 4  // The length of fork id
+	ExpByteGas            uint64 = 10 // Times ceil(log256(exponent)) for the EXP instruction.
+	SloadGas              uint64 = 50
 	CallValueTransferGas  uint64 = 9000     // Paid for CALL when the value transfer is non-zero.
 	CallNewAccountGas     uint64 = 25000    // Paid for CALL when the destination address didn't exist prior.
 	TxGas                 uint64 = 21000    // Per transaction not creating a contract. NOTE: Not payable on data of calls between transactions.
@@ -85,7 +85,7 @@ const (
 	CallCreateDepth       uint64 = 1024  // Maximum depth of call/create stack.
 	ExpGas                uint64 = 10    // Once per EXP instruction
 	LogGas                uint64 = 375   // Per LOG* operation.
-	CopyGas               uint64 = 3     //
+	CopyGas               uint64 = 3     // Multiplied by the number of 32-byte words that are copied (round up) for any *COPY operation and added.
 	StackLimit            uint64 = 1024  // Maximum size of VM stack allowed.
 	TierStepGas           uint64 = 0     // Once per operation, for a selection of them.
 	LogTopicGas           uint64 = 375   // Multiplied by the * of the LOG*, per LOG transaction. e.g. LOG0 incurs 0 * c_txLogTopicGas, LOG4 incurs 4 * c_txLogTopicGas.
@@ -99,6 +99,7 @@ const (
 	TxDataNonZeroGasEIP2028   uint64 = 16    // Per byte of non zero data attached to a transaction after EIP 2028 (part in Istanbul)
 	TxTokenPerNonZeroByte     uint64 = 4     // Token cost per non-zero byte as specified by EIP-7623.
 	TxCostFloorPerToken       uint64 = 10    // Cost floor per byte of data as specified by EIP-7623.
+	TxCostFloorPerToken7976   uint64 = 16    // Cost floor per byte of data as specified by EIP-7976.
 	TxAccessListAddressGas    uint64 = 2400  // Per address specified in EIP 2930 access list
 	TxAccessListStorageKeyGas uint64 = 1900  // Per storage key specified in EIP 2930 access list
 	TxAuthTupleGas            uint64 = 12500 // Per auth tuple code specified in EIP-7702
@@ -138,8 +139,10 @@ const (
 	InitialBaseFee                  = 1000000000 // Initial base fee for EIP-1559 blocks.
 	InitialBaseFeeForBSC            = 0          // Initial base fee for EIP-1559 blocks on bsc Mainnet
 
-	MaxCodeSize     = 24576           // Maximum bytecode to permit for a contract
-	MaxInitCodeSize = 2 * MaxCodeSize // Maximum initcode to permit in a creation transaction and create instructions
+	MaxCodeSize              = 24576                    // Maximum bytecode to permit for a contract
+	MaxInitCodeSize          = 2 * MaxCodeSize          // Maximum initcode to permit in a creation transaction and create instructions
+	MaxCodeSizeAmsterdam     = 32768                    // Maximum bytecode to permit for a contract post Amsterdam
+	MaxInitCodeSizeAmsterdam = 2 * MaxCodeSizeAmsterdam // Maximum initcode to permit in a creation transaction and create instructions post Amsterdam
 
 	// Precompiled contract gas prices
 
@@ -148,16 +151,17 @@ const (
 	CometBFTLightBlockValidateGas        uint64 = 3000 // Base gas for validate cometBFT light block
 	CometBFTLightBlockValidatePerByteGas uint64 = 16   // Per-input-byte gas for cometBFT light block (Pasteur)
 
-	EcrecoverGas                uint64 = 3000  // Elliptic curve sender recovery gas price
-	Sha256BaseGas               uint64 = 60    // Base price for a SHA256 operation
-	Sha256PerWordGas            uint64 = 12    // Per-word price for a SHA256 operation
-	Ripemd160BaseGas            uint64 = 600   // Base price for a RIPEMD160 operation
-	Ripemd160PerWordGas         uint64 = 120   // Per-word price for a RIPEMD160 operation
-	IdentityBaseGas             uint64 = 15    // Base price for a data copy operation
-	IdentityPerWordGas          uint64 = 3     // Per-work price for a data copy operation
-	BlsSignatureVerifyBaseGas   uint64 = 1000  // base price for a BLS signature verify operation
-	BlsSignatureVerifyPerKeyGas uint64 = 3500  // Per-key price for a BLS signature verify operation
-	DoubleSignEvidenceVerifyGas uint64 = 10000 // Gas for verify double sign evidence
+	EcrecoverGas                       uint64 = 3000  // Elliptic curve sender recovery gas price
+	Sha256BaseGas                      uint64 = 60    // Base price for a SHA256 operation
+	Sha256PerWordGas                   uint64 = 12    // Per-word price for a SHA256 operation
+	Ripemd160BaseGas                   uint64 = 600   // Base price for a RIPEMD160 operation
+	Ripemd160PerWordGas                uint64 = 120   // Per-word price for a RIPEMD160 operation
+	IdentityBaseGas                    uint64 = 15    // Base price for a data copy operation
+	IdentityPerWordGas                 uint64 = 3     // Per-work price for a data copy operation
+	BlsSignatureVerifyBaseGas          uint64 = 1000  // base price for a BLS signature verify operation
+	BlsSignatureVerifyPerKeyGas        uint64 = 3500  // Per-key price for a BLS signature verify operation
+	DoubleSignEvidenceVerifyGas        uint64 = 10000 // Gas for verify double sign evidence
+	DoubleSignEvidenceVerifyPerByteGas uint64 = 16    // Per-input-byte gas for verify double sign evidence (Jenner)
 
 	Bn256AddGasByzantium             uint64 = 500    // Byzantium gas needed for an elliptic curve addition
 	Bn256AddGasIstanbul              uint64 = 150    // Gas needed for an elliptic curve addition
@@ -178,6 +182,8 @@ const (
 	Bls12381MapG2Gas          uint64 = 23800 // Gas price for BLS12-381 mapping field element to G2 operation
 
 	P256VerifyGas uint64 = 6900 // secp256r1 elliptic curve signature verifier gas price
+
+	MilliTimestampGas uint64 = 20 // Gas cost of the BEP-706 millisecond-timestamp precompile
 
 	// The Refund Quotient is the cap on how much of the used gas can be refunded. Before EIP-3529,
 	// up to half the consumed gas could be refunded. Redefined as 1/5th in EIP-3529
@@ -237,7 +243,18 @@ var (
 
 	// EIP-2935 - Serve historical block hashes from state
 	HistoryStorageAddress = common.HexToAddress("0x0000F90827F1C53a10cb7A02335B175320002935")
-	HistoryStorageCode    = common.FromHex("3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5ffd5b5f35611fff60014303065500")
+
+	// CAS20GovHubAddress is BSC's GovHub, the only account the CAS20 ActivationRegistry
+	// accepts a parameter change from (BEP-702 3.15). It is duplicated from
+	// core/systemcontracts, which imports core/vm and so cannot be imported back.
+	//
+	// A governance proposal cannot name the registry directly: BSCGovernor's
+	// whitelist of proposal targets holds GovHub alone and has no setter. GovHub's
+	// own updateParam(key, value, target) takes an arbitrary target, though, and
+	// forwards to updateParam(key, value) on it — which is how every system
+	// contract is configured and how this registry is reached.
+	CAS20GovHubAddress = common.HexToAddress("0x0000000000000000000000000000000000001007")
+	HistoryStorageCode = common.FromHex("3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5ffd5b5f35611fff60014303065500")
 
 	// EIP-7002 - Execution layer triggerable withdrawals
 	WithdrawalQueueAddress = common.HexToAddress("0x00000961Ef480Eb55e80D19ad83579A64c007002")
@@ -246,4 +263,12 @@ var (
 	// EIP-7251 - Increase the MAX_EFFECTIVE_BALANCE
 	ConsolidationQueueAddress = common.HexToAddress("0x0000BBdDc7CE488642fb579F8B00f3a590007251")
 	ConsolidationQueueCode    = common.FromHex("3373fffffffffffffffffffffffffffffffffffffffe1460d35760115f54807fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff1461019a57600182026001905f5b5f82111560685781019083028483029004916001019190604d565b9093900492505050366060146088573661019a573461019a575f5260205ff35b341061019a57600154600101600155600354806004026004013381556001015f358155600101602035815560010160403590553360601b5f5260605f60143760745fa0600101600355005b6003546002548082038060021160e7575060025b5f5b8181146101295782810160040260040181607402815460601b815260140181600101548152602001816002015481526020019060030154905260010160e9565b910180921461013b5790600255610146565b90505f6002555f6003555b5f54807fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff141561017357505f5b6001546001828201116101885750505f61018e565b01600190035b5f555f6001556074025ff35b5f5ffd")
+)
+
+// System log events.
+var (
+	// EIP-7708 - System logs emitted for ETH transfer and burn
+	EthTransferLogEvent = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef") // keccak256('Transfer(address,address,uint256)')
+	EthBurnLogEvent     = common.HexToHash("0xcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5") // keccak256('Burn(address,uint256)')
+
 )
