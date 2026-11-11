@@ -153,6 +153,9 @@ func (p *statePrefetcher) PrefetchMining(txs TransactionsByPriceAndNonce, header
 		go func(startCh <-chan *types.Transaction, stopCh <-chan struct{}) {
 			newStatedb := statedb.Copy()
 			evm := vm.NewEVM(NewEVMBlockContext(header, p.chain, nil), newStatedb, p.config, cfg)
+			// The worker owns this EVM for its whole life; hand the stack arena
+			// back to the pool on exit, like Prefetch above does.
+			defer evm.Release()
 			idx := 0
 			// Iterate over and process the individual transactions
 			for {
