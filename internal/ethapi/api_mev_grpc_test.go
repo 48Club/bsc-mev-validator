@@ -315,3 +315,32 @@ func TestMevGRPCRejectsOversizedRequest(t *testing.T) {
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	require.False(t, called.Load())
 }
+
+// The nontaxableFee argument reaches the MevAPI call over gRPC as it does over JSON-RPC; a request
+// without the field (a client built from the upstream proto) reaches it unset.
+func TestMevGRPCNontaxableFeeReachesTheAPI(t *testing.T) {
+	_, encoded := testGRPCBidBlock(t)
+
+	api := &testMevBidBlockAPI{}
+	server := &MevGRPCServer{api: api}
+	_, err := server.SendBidBlock(context.Background(), &mevpb.BidBlockRequest{
+		BidBlockRlp:   encoded,
+		Signature:     []byte{0xaa},
+		NontaxableFee: big.NewInt(7_000_000_000_000_000).Bytes(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, big.NewInt(7_000_000_000_000_000), api.args.NontaxableFee)
+
+	api = &testMevBidBlockAPI{}
+	server = &MevGRPCServer{api: api}
+	_, err = server.SendBidBlock(context.Background(), &mevpb.BidBlockRequest{BidBlockRlp: encoded, Signature: []byte{0xaa}})
+	require.NoError(t, err)
+	require.Nil(t, api.args.NontaxableFee)
+
+	// a malformed amount is refused as an invalid bid before the business call
+	api = &testMevBidBlockAPI{}
+	server = &MevGRPCServer{api: api}
+	_, err = server.SendBidBlock(context.Background(), &mevpb.BidBlockRequest{BidBlockRlp: encoded, Signature: []byte{0xaa}, NontaxableFee: make([]byte, 33)})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.False(t, api.called.Load())
+}
