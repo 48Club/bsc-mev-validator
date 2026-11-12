@@ -69,6 +69,7 @@ type simCallResult struct {
 	ReturnValue hexutil.Bytes  `json:"returnData"`
 	Logs        []*types.Log   `json:"logs"`
 	GasUsed     hexutil.Uint64 `json:"gasUsed"`
+	MaxUsedGas  hexutil.Uint64 `json:"maxUsedGas"`
 	Status      hexutil.Uint64 `json:"status"`
 	Error       *callError     `json:"error,omitempty"`
 }
@@ -254,7 +255,7 @@ func (sim *simulator) execute(ctx context.Context, blocks []simBlock) ([]*simBlo
 	var (
 		results = make([]*simBlockResult, len(blocks))
 		parent  = sim.base
-		// Assume same total difficulty for all simulated blocks.
+		// Assume the same total difficulty for non-BSC chains.
 		td = sim.b.GetTd(ctx, sim.base.Hash())
 	)
 	for bi, block := range blocks {
@@ -263,7 +264,17 @@ func (sim *simulator) execute(ctx context.Context, blocks []simBlock) ([]*simBlo
 			return nil, err
 		}
 		headers[bi] = result.Header()
-		results[bi] = &simBlockResult{fullTx: sim.fullTx, chainConfig: sim.chainConfig, Block: result, Calls: callResults, td: td, senders: senders}
+		if sim.isBSC() && td != nil {
+			td = new(big.Int).Add(td, headers[bi].Difficulty)
+		}
+		results[bi] = &simBlockResult{
+			fullTx:      sim.fullTx,
+			chainConfig: sim.chainConfig,
+			Block:       result,
+			Calls:       callResults,
+			td:          td,
+			senders:     senders,
+		}
 		parent = result.Header()
 	}
 	return results, nil
@@ -292,21 +303,33 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 		}
 		header.ExcessBlobGas = &excess
 	}
+	// NewEVMBlockContext already derives MilliTimestamp from
+	// header.MilliTimestamp() (BEP-520/BEP-706): on BSC the synthetic header's
+	// MixDigest is the millisecond remainder — zero, or a prevRandao override
+	// validated to be < 1000 in sanitizeChain — so the BEP-706 precompile reads
+	// the exact millisecond timestamp with no extra fix-up here.
 	blockContext := core.NewEVMBlockContext(header, sim.newSimulatedChainContext(ctx, headers), nil)
 	if block.BlockOverrides.BlobBaseFee != nil {
 		blockContext.BlobBaseFee = block.BlockOverrides.BlobBaseFee.ToInt()
 	}
-	precompiles := sim.activePrecompiles(sim.base)
+	// Honor explicit prevRandao on BSC despite its non-zero difficulty, as eth_call does.
+	if sim.isBSC() && block.BlockOverrides.PrevRandao != nil {
+		blockContext.Random = block.BlockOverrides.PrevRandao
+	}
+	precompiles := sim.activePrecompiles(header)
+
 	// State overrides are applied prior to execution of a block
 	if err := block.StateOverrides.Apply(sim.state, precompiles); err != nil {
 		return nil, nil, nil, err
 	}
 	var (
-		gasUsed, blobGasUsed uint64
-		gp                   = new(core.GasPool).AddGas(blockContext.GasLimit)
-		txes                 = make([]*types.Transaction, len(block.Calls))
-		callResults          = make([]simCallResult, len(block.Calls))
-		receipts             = make([]*types.Receipt, len(block.Calls))
+		gp          = core.NewGasPool(blockContext.GasLimit)
+		blobGasUsed uint64
+
+		txes        = make([]*types.Transaction, len(block.Calls))
+		callResults = make([]simCallResult, len(block.Calls))
+		receipts    = make([]*types.Receipt, len(block.Calls))
+
 		// Block hash will be repaired after execution.
 		tracer   = newTracer(sim.traceTransfers, blockContext.BlockNumber.Uint64(), blockContext.Time, common.Hash{}, common.Hash{}, 0)
 		vmConfig = &vm.Config{
@@ -323,12 +346,13 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 		tracingStateDB = state.NewHookedState(sim.state, hooks)
 	}
 	evm := vm.NewEVM(blockContext, tracingStateDB, sim.chainConfig, *vmConfig)
+	defer evm.Release()
 	// It is possible to override precompiles with EVM bytecode, or
 	// move them to another address.
 	if precompiles != nil {
 		evm.SetPrecompiles(precompiles)
 	}
-	if sim.chainConfig.IsPrague(header.Number, header.Time) || sim.chainConfig.IsVerkle(header.Number, header.Time) {
+	if sim.chainConfig.IsPrague(header.Number, header.Time) || sim.chainConfig.IsUBT(header.Number, header.Time) {
 		core.ProcessParentBlockHash(header.ParentHash, evm)
 	}
 	if header.ParentBeaconRoot != nil {
@@ -336,10 +360,12 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 	}
 	var allLogs []*types.Log
 	for i, call := range block.Calls {
+		// Terminate if the context is cancelled
 		if err := ctx.Err(); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := sim.sanitizeCall(&call, sim.state, header, blockContext, &gasUsed); err != nil {
+		gasCapped, err := sim.sanitizeCall(&call, sim.state, header, gp)
+		if err != nil {
 			return nil, nil, nil, err
 		}
 		var (
@@ -349,8 +375,9 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 		txes[i] = tx
 		senders[txHash] = call.from()
 		tracer.reset(txHash, uint(i))
-		sim.state.SetTxContext(txHash, i)
+
 		// EoA check is always skipped, even in validation mode.
+		sim.state.SetTxContext(txHash, i)
 		msg := call.ToMessage(header.BaseFee, !sim.validate)
 		result, err := applyMessageWithEVM(ctx, evm, msg, timeout, gp)
 		if err != nil {
@@ -364,8 +391,7 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 		} else {
 			root = sim.state.IntermediateRoot(sim.chainConfig.IsEIP158(blockContext.BlockNumber)).Bytes()
 		}
-		gasUsed += result.UsedGas
-		receipts[i] = core.MakeReceipt(evm, result, sim.state, blockContext.BlockNumber, common.Hash{}, blockContext.Time, tx, gasUsed, root)
+		receipts[i] = core.MakeReceipt(evm, result, sim.state, blockContext.BlockNumber, common.Hash{}, blockContext.Time, tx, gp.CumulativeUsed(), root)
 		blobGasUsed += receipts[i].BlobGasUsed
 
 		// Make sure the gas cap is still enforced. It's only for
@@ -375,15 +401,19 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 		}
 
 		logs := tracer.Logs()
-		callRes := simCallResult{ReturnValue: result.Return(), Logs: logs, GasUsed: hexutil.Uint64(result.UsedGas)}
+		callRes := simCallResult{ReturnValue: result.Return(), Logs: logs, GasUsed: hexutil.Uint64(result.UsedGas), MaxUsedGas: hexutil.Uint64(result.MaxUsedGas)}
 		if result.Failed() {
 			callRes.Status = hexutil.Uint64(types.ReceiptStatusFailed)
 			if errors.Is(result.Err, vm.ErrExecutionReverted) {
 				// If the result contains a revert reason, try to unpack it.
 				revertErr := newRevertError(result.Revert())
-				callRes.Error = &callError{Message: revertErr.Error(), Code: errCodeReverted, Data: revertErr.ErrorData().(string)}
+				callRes.Error = &callError{Message: revertErr.Error(), Code: revertErr.ErrorCode(), Data: revertErr.ErrorData().(string)}
 			} else {
-				callRes.Error = &callError{Message: result.Err.Error(), Code: errCodeVMError}
+				msg := result.Err.Error()
+				if gasCapped {
+					msg += " (gas limit was capped by the RPC server's global gas cap)"
+				}
+				callRes.Error = &callError{Message: msg, Code: errCodeVMError}
 			}
 		} else {
 			callRes.Status = hexutil.Uint64(types.ReceiptStatusSuccessful)
@@ -391,12 +421,14 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 		}
 		callResults[i] = callRes
 	}
-	header.GasUsed = gasUsed
+	// Assign total consumed gas to the header
+	header.GasUsed = gp.Used()
 	if sim.chainConfig.IsCancun(header.Number, header.Time) {
 		header.BlobGasUsed = &blobGasUsed
 	}
-	var requests [][]byte
+
 	// Process EIP-7685 requests
+	var requests [][]byte
 	if sim.chainConfig.IsPrague(header.Number, header.Time) {
 		requests = [][]byte{}
 		// EIP-6110
@@ -416,12 +448,19 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 		reqHash := types.CalcRequestsHash(requests)
 		header.RequestsHash = &reqHash
 	}
-	blockBody := &types.Body{Transactions: txes, Withdrawals: *block.BlockOverrides.Withdrawals}
+
+	blockBody := &types.Body{
+		Transactions: txes,
+		Withdrawals:  *block.BlockOverrides.Withdrawals, // Withdrawal is also sanitized as non-nil
+	}
 	chainHeadReader := &simChainHeadReader{ctx, sim.b}
+
+	// Assemble the block
 	b, err := sim.FinalizeAndAssemble(chainHeadReader, header, sim.state, blockBody, receipts)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+
 	repairLogs(callResults, b.Hash())
 	return b, callResults, senders, nil
 }
@@ -437,24 +476,25 @@ func repairLogs(calls []simCallResult, hash common.Hash) {
 	}
 }
 
-func (sim *simulator) sanitizeCall(call *TransactionArgs, state vm.StateDB, header *types.Header, blockContext vm.BlockContext, gasUsed *uint64) error {
+func (sim *simulator) sanitizeCall(call *TransactionArgs, state vm.StateDB, header *types.Header, gp *core.GasPool) (bool, error) {
 	if call.Nonce == nil {
 		nonce := state.GetNonce(call.from())
 		call.Nonce = (*hexutil.Uint64)(&nonce)
 	}
 	// Let the call run wild unless explicitly specified.
+	remaining := gp.Gas()
 	if call.Gas == nil {
-		remaining := blockContext.GasLimit - *gasUsed
 		call.Gas = (*hexutil.Uint64)(&remaining)
 	}
-	if *gasUsed+uint64(*call.Gas) > blockContext.GasLimit {
-		return &blockGasLimitReachedError{fmt.Sprintf("block gas limit reached: %d >= %d", gasUsed, blockContext.GasLimit)}
+	if remaining < uint64(*call.Gas) {
+		return false, &blockGasLimitReachedError{fmt.Sprintf("block gas limit reached: remaining: %d, required: %d", remaining, *call.Gas)}
 	}
 	// Clamp to the cross-block gas budget.
 	gas := sim.budget.cap(uint64(*call.Gas))
+	gasCapped := gas < uint64(*call.Gas)
 	call.Gas = (*hexutil.Uint64)(&gas)
 
-	return call.CallDefaults(0, header.BaseFee, sim.chainConfig.ChainID)
+	return gasCapped, call.CallDefaults(0, header.BaseFee, sim.chainConfig.ChainID)
 }
 
 func (sim *simulator) activePrecompiles(base *types.Header) vm.PrecompiledContracts {
@@ -463,6 +503,10 @@ func (sim *simulator) activePrecompiles(base *types.Header) vm.PrecompiledContra
 		rules   = sim.chainConfig.Rules(base.Number, isMerge, base.Time)
 	)
 	return vm.ActivePrecompiledContracts(rules)
+}
+
+func (sim *simulator) isBSC() bool {
+	return sim.chainConfig != nil && sim.chainConfig.IsInBSC()
 }
 
 // sanitizeChain checks the chain integrity. Specifically it checks that
@@ -484,6 +528,14 @@ func (sim *simulator) sanitizeChain(blocks []simBlock) ([]simBlock, error) {
 			n := new(big.Int).Add(prevNumber, big.NewInt(1))
 			block.BlockOverrides.Number = (*hexutil.Big)(n)
 		}
+		var remainder uint64
+		if sim.isBSC() && block.BlockOverrides.PrevRandao != nil {
+			var err error
+			remainder, err = override.BSCMilliRemainder(block.BlockOverrides.PrevRandao)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if block.BlockOverrides.Withdrawals == nil {
 			block.BlockOverrides.Withdrawals = &types.Withdrawals{}
 		}
@@ -499,6 +551,9 @@ func (sim *simulator) sanitizeChain(blocks []simBlock) ([]simBlock, error) {
 			gap := new(big.Int).Sub(diff, big.NewInt(1))
 			// Assign block number to the empty blocks.
 			for i := uint64(0); i < gap.Uint64(); i++ {
+				if sim.isBSC() && prevTimestamp > math.MaxUint64-timestampIncrement {
+					return nil, &invalidBlockTimestampError{fmt.Sprintf("block timestamps overflow at %d", prevTimestamp)}
+				}
 				n := new(big.Int).Add(prevNumber, big.NewInt(int64(i+1)))
 				t := prevTimestamp + timestampIncrement
 				b := simBlock{
@@ -508,6 +563,11 @@ func (sim *simulator) sanitizeChain(blocks []simBlock) ([]simBlock, error) {
 						Withdrawals: &types.Withdrawals{},
 					},
 				}
+				if sim.isBSC() {
+					if _, err := override.BSCMilliTimestamp(t, 0); err != nil {
+						return nil, &invalidBlockTimestampError{err.Error()}
+					}
+				}
 				prevTimestamp = t
 				res = append(res, b)
 			}
@@ -516,6 +576,9 @@ func (sim *simulator) sanitizeChain(blocks []simBlock) ([]simBlock, error) {
 		prevNumber = block.BlockOverrides.Number.ToInt()
 		var t uint64
 		if block.BlockOverrides.Time == nil {
+			if sim.isBSC() && prevTimestamp > math.MaxUint64-timestampIncrement {
+				return nil, &invalidBlockTimestampError{fmt.Sprintf("block timestamps overflow at %d", prevTimestamp)}
+			}
 			t = prevTimestamp + timestampIncrement
 			block.BlockOverrides.Time = (*hexutil.Uint64)(&t)
 		} else {
@@ -525,6 +588,11 @@ func (sim *simulator) sanitizeChain(blocks []simBlock) ([]simBlock, error) {
 			}
 		}
 		prevTimestamp = t
+		if sim.isBSC() {
+			if _, err := override.BSCMilliTimestamp(t, remainder); err != nil {
+				return nil, &invalidBlockTimestampError{err.Error()}
+			}
+		}
 		res = append(res, block)
 	}
 	return res, nil
@@ -545,12 +613,14 @@ func (sim *simulator) makeHeaders(blocks []simBlock) ([]*types.Header, error) {
 		}
 		overrides := block.BlockOverrides
 
-		var withdrawalsHash *common.Hash
 		number := overrides.Number.ToInt()
 		timestamp := (uint64)(*overrides.Time)
+
+		var withdrawalsHash *common.Hash
 		if sim.chainConfig.IsShanghai(number, timestamp) {
 			withdrawalsHash = &types.EmptyWithdrawalsHash
 		}
+
 		var parentBeaconRoot *common.Hash
 		if sim.chainConfig.IsCancun(number, timestamp) {
 			parentBeaconRoot = &common.Hash{}
@@ -560,8 +630,9 @@ func (sim *simulator) makeHeaders(blocks []simBlock) ([]*types.Header, error) {
 		}
 		// Set difficulty to zero if the given block is post-merge. Without this, all post-merge hardforks would remain inactive.
 		// For example, calling eth_simulateV1(..., blockParameter: 0x0) on hoodi network will cause all blocks to have a difficulty of 1 and be treated as pre-merge.
+		// BSC keeps non-zero difficulty and activates these forks independently of Merge.
 		difficulty := header.Difficulty
-		if sim.chainConfig.IsPostMerge(number.Uint64(), timestamp) {
+		if !sim.isBSC() && sim.chainConfig.IsPostMerge(number.Uint64(), timestamp) {
 			difficulty = big.NewInt(0)
 		}
 		header = overrides.MakeHeader(&types.Header{
@@ -580,7 +651,11 @@ func (sim *simulator) makeHeaders(blocks []simBlock) ([]*types.Header, error) {
 }
 
 func (sim *simulator) newSimulatedChainContext(ctx context.Context, headers []*types.Header) *ChainContext {
-	return NewChainContext(ctx, &simBackend{base: sim.base, b: sim.b, headers: headers})
+	return NewChainContext(ctx, &simBackend{
+		base:    sim.base,
+		b:       sim.b,
+		headers: headers,
+	})
 }
 
 func (sim *simulator) FinalizeAndAssemble(chain *simChainHeadReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {

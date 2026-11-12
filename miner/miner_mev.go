@@ -99,7 +99,7 @@ func (miner *Miner) SendBidBlock(ctx context.Context, args *buildertypes.BidBloc
 	}
 	miner.bidSimulator.recordBidBlockBuilder(builder)
 
-	// Check permission before CheckPending so rejected BidBlocks do not use quota.
+	// Check permission before ReservePending so rejected BidBlocks do not use quota.
 	if !miner.worker.permMgr.IsAllowed(builder) {
 		return common.Hash{}, buildertypes.NewBidBlockPermissionRevokedError("builder BidBlock permission revoked, fallback to SendBid")
 	}
@@ -115,11 +115,13 @@ func (miner *Miner) SendBidBlock(ctx context.Context, args *buildertypes.BidBloc
 	}
 
 	// Security: validators must self-produce hard-fork activation blocks.
-	if miner.worker.chainConfig.IsOnPasteur(bb.Header.Number, parent.Time, bb.Header.Time) {
+	if miner.worker.chainConfig.IsOnPasteur(bb.Header.Number, parent.Time, bb.Header.Time) ||
+		miner.worker.chainConfig.IsOnJenner(bb.Header.Number, parent.Time, bb.Header.Time) {
 		return common.Hash{}, buildertypes.NewInvalidBidError(fmt.Sprintf(
 			"BidBlock disabled on hard-fork activation block %d, fallback to SendBid", blockNumber))
 	}
-	if err := miner.bidSimulator.CheckPending(blockNumber, builder, bidHash); err != nil {
+	// Reserve the quota slot atomically (check + insert under one lock).
+	if err := miner.bidSimulator.ReservePending(blockNumber, builder, bidHash); err != nil {
 		return common.Hash{}, err
 	}
 
@@ -180,8 +182,8 @@ func (miner *Miner) SendBid(ctx context.Context, bidArgs *buildertypes.BidArgs) 
 		return common.Hash{}, buildertypes.NewInvalidBidError("builder is not registered")
 	}
 
-	err = miner.bidSimulator.CheckPending(bidArgs.RawBid.BlockNumber, builder, bidArgs.RawBid.Hash())
-	if err != nil {
+	// Reserve the quota slot atomically (check + insert under one lock).
+	if err = miner.bidSimulator.ReservePending(bidArgs.RawBid.BlockNumber, builder, bidArgs.RawBid.Hash()); err != nil {
 		return common.Hash{}, err
 	}
 
@@ -200,7 +202,6 @@ func (miner *Miner) SendBid(ctx context.Context, bidArgs *buildertypes.BidArgs) 
 	}
 
 	err = miner.bidSimulator.sendBid(ctx, bid)
-
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -259,17 +260,21 @@ func (miner *Miner) MevParams() *buildertypes.MevParams {
 		log.Error("failed to parse builder fee ceil", "BuilderFeeCeil", *miner.worker.config.Mev.BuilderFeeCeil)
 		return nil
 	}
+	grpcEnabled := !miner.worker.config.Mev.GRPCDisabled &&
+		*miner.worker.config.Mev.Enabled && *miner.worker.config.Mev.BidBlockEnabled
 
 	return &buildertypes.MevParams{
 		ValidatorCommission:   *miner.worker.config.Mev.ValidatorCommission,
 		BidSimulationLeftOver: *miner.worker.config.Mev.BidSimulationLeftOver,
 		NoInterruptLeftOver:   *miner.worker.config.Mev.NoInterruptLeftOver,
+		DelayLeftOver:         *miner.worker.config.DelayLeftOver,
 		MaxBidsPerBuilder:     *miner.worker.config.Mev.MaxBidsPerBuilder,
 		GasCeil:               miner.worker.config.GasCeil,
 		GasPrice:              miner.worker.config.GasPrice,
 		BuilderFeeCeil:        builderFeeCeil,
 		BidBlockEnabled:       miner.bidBlockEnabled(),
 		ValidatorBidFeeEOA:    miner.worker.config.Mev.ValidatorBidFeeEOA,
+		GRPCEnabled:           grpcEnabled,
 		Version:               version.Semantic,
 	}
 }

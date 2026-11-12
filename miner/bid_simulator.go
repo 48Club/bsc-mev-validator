@@ -92,8 +92,9 @@ var (
 		Timeout:   5 * time.Second,
 		Transport: transport,
 	}
-	errBetterBid  = errors.New("simulation abort due to better bid arrived")
-	errNoTimeLeft = errors.New("bid discarded due to lack of simulation time")
+	errBetterBid             = errors.New("simulation abort due to better bid arrived")
+	errNoTimeLeft            = errors.New("bid discarded due to lack of simulation time")
+	errZeroBidBlockStateRoot = errors.New("bid block rejected due to zero state root")
 )
 
 type bidWorker interface {
@@ -713,11 +714,16 @@ func (b *bidSimulator) recordBidBlockBuilder(builder common.Address) {
 func (b *bidSimulator) preSealVerifyBidBlock(decoded *buildertypes.DecodedBidBlock) error {
 	start := time.Now()
 	defer bidBlockPreSealVerifyTimer.UpdateSince(start)
+	header := decoded.Header
+
+	if header.Root == (common.Hash{}) {
+		return errZeroBidBlockStateRoot
+	}
+
 	parliaEngine, ok := b.engine.(*parlia.Parlia)
 	if !ok {
 		return errors.New("consensus engine is not parlia")
 	}
-	header := decoded.Header
 
 	if header.Coinbase != b.bidWorker.etherbase() {
 		return fmt.Errorf("invalid coinbase: got %s, want %s",
@@ -774,7 +780,7 @@ func (b *bidSimulator) preSealVerifyBidBlock(decoded *buildertypes.DecodedBidBlo
 	// cannot fail inside a valid block, so no post-import recheck exists.
 	var parentState accountCodeSizeReader
 	if len(b.config.ValidatorBidFeeEOA) != 0 {
-		state, err := b.chain.StateAt(parent.Root)
+		state, err := b.chain.StateAt(parent)
 		if err != nil {
 			return fmt.Errorf("load BidBlock parent state: %w", err)
 		}
@@ -839,7 +845,6 @@ func (b *bidSimulator) sendBidBlock(_ context.Context, block *buildertypes.Decod
 
 	select {
 	case b.newBidBlockCh <- newBidBlockPackage{bidBlock: block, feedback: replyCh}:
-		b.AddPending(block.BlockNumber(), block.Builder, block.Hash())
 	case <-timer.C:
 		return buildertypes.ErrMevBusy
 	}
@@ -927,7 +932,6 @@ func (b *bidSimulator) sendBid(ctx context.Context, bid *buildertypes.Bid) error
 
 	select {
 	case b.newBidCh <- newBidPackage{bid: bid, feedback: replyCh, receiveTime: receiveTime}:
-		b.AddPending(bid.BlockNumber, bid.Builder, bid.Hash())
 	case <-timer.C:
 		return buildertypes.ErrMevBusy
 	}
@@ -940,7 +944,10 @@ func (b *bidSimulator) sendBid(ctx context.Context, bid *buildertypes.Bid) error
 	}
 }
 
-func (b *bidSimulator) CheckPending(blockNumber uint64, builder common.Address, bidHash common.Hash) error {
+// ReservePending atomically checks the quota/duplicate state and records the
+// bid hash under one lock, so concurrent bids can't all pass before any is
+// recorded.
+func (b *bidSimulator) ReservePending(blockNumber uint64, builder common.Address, bidHash common.Hash) error {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
 
@@ -961,14 +968,8 @@ func (b *bidSimulator) CheckPending(blockNumber uint64, builder common.Address, 
 		return fmt.Errorf("too many bids: exceeded limit of %d bids per builder per block", b.maxBidsPerBuilder)
 	}
 
-	return nil
-}
-
-func (b *bidSimulator) AddPending(blockNumber uint64, builder common.Address, bidHash common.Hash) {
-	b.pendingMu.Lock()
-	defer b.pendingMu.Unlock()
-
 	b.pending[blockNumber][builder][bidHash] = struct{}{}
+	return nil
 }
 
 // simBid simulates a newBid with txs.
@@ -1053,6 +1054,11 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 	}, false); err != nil {
 		return
 	}
+	// Mark this env as simulator-owned: it is retained in bidsToSim and
+	// discarded only by clearLoop, so the worker must not discard it when this
+	// bid wins and its env becomes w.current. AddBidToSim below is what makes
+	// clearLoop the sole owner; the two must stay paired.
+	bidRuntime.env.fromBid = true
 	b.AddBidToSim(bidRuntime)
 
 	// if the left time is not enough to do simulation, return
@@ -1063,12 +1069,12 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 	}
 
 	gasLimit := bidRuntime.env.header.GasLimit
-	if bidRuntime.env.gasPool == nil {
-		bidRuntime.env.gasPool = new(core.GasPool).AddGas(gasLimit)
-		if p, ok := b.engine.(*parlia.Parlia); ok {
-			bidRuntime.env.gasPool.SubGas(p.EstimateGasReservedForSystemTxs(b.chain, bidRuntime.env.header))
-		}
-		bidRuntime.env.gasPool.SubGas(params.PayBidTxGasLimit)
+
+	// Reserve gas for the payBidTx appended at the end of the block so the
+	// admission check and greedy merge leave room for it; returned right before
+	// it is committed.
+	if err = bidRuntime.env.gasPool.SubGas(params.PayBidTxGasLimit); err != nil {
+		return
 	}
 
 	// error log:
@@ -1191,6 +1197,12 @@ func (b *bidSimulator) simBid(interruptCh chan int32, bidRuntime *BidRuntime) {
 		log.Error("BidSimulator: failed to commit tx", "builder", bidRuntime.bid.Builder,
 			"bidHash", bidRuntime.bid.Hash(), "tx", payBidTx.Hash(), "err", err)
 		err = fmt.Errorf("invalid tx in bid, %v", err)
+		return
+	}
+
+	if err = bidRuntime.env.lane.VerifyPackedBid(bidRuntime.env.gasPool.Gas()); err != nil {
+		log.Warn("BidSimulator: bid rejected by the payment lane", "builder", bidRuntime.bid.Builder,
+			"bidHash", bidRuntime.bid.Hash(), "err", err)
 		return
 	}
 
@@ -1342,13 +1354,17 @@ func (r *BidRuntime) commitTransaction(chain *core.BlockChain, chainConfig *para
 		}
 	}
 
-	receipt, err := core.ApplyTransaction(env.evm, env.gasPool, env.state, env.header, tx,
-		&env.header.GasUsed, core.NewReceiptBloomGenerator())
+	laneType := env.lane.Classify(tx)
+	usedBefore := env.gasPool.Used()
+
+	receipt, err := core.ApplyTransaction(env.evm, env.gasPool, env.state, env.header, tx, core.NewReceiptBloomGenerator())
 	if err != nil {
 		return err
 	} else if unRevertible && receipt.Status == types.ReceiptStatusFailed {
 		return errors.New("no revertible transaction failed")
 	}
+	env.lane.RecordUsedFrom(laneType, env.gasPool, usedBefore)
+	env.header.GasUsed = env.gasPool.Used()
 
 	if tx.Type() == types.BlobTxType {
 		sc.TxIndex = uint64(len(env.txs))

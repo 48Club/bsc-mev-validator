@@ -17,14 +17,14 @@
 package core
 
 import (
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
 // NewTxsEvent is posted when a batch of transactions enters the transaction pool.
 type NewTxsEvent struct{ Txs []*types.Transaction }
-
-// ReannoTxsEvent is posted when a batch of local pending transactions exceed a specified duration.
-type ReannoTxsEvent struct{ Txs []*types.Transaction }
 
 // NewSealedBlockEvent is posted when a block has been sealed.
 type NewSealedBlockEvent struct{ Block *types.Block }
@@ -41,6 +41,18 @@ type NewVoteEvent struct{ Vote *types.VoteEnvelope }
 // FinalizedHeaderEvent is posted when a finalized header is reached.
 type FinalizedHeaderEvent struct{ Header *types.Header }
 
+// BadBidBlockEvent is posted when a block from the MEV v2 (BEP-675 SendBidBlock)
+// path fails execution locally. Only posted for header- and body-verified blocks,
+// so Sealer is the validator parlia recovered from the seal. ParentHash anchors
+// the validator-set lookup, which head cannot: it may have moved on by then.
+type BadBidBlockEvent struct {
+	Builder    common.Address
+	Sealer     common.Address
+	Hash       common.Hash
+	ParentHash common.Hash
+	Number     uint64
+}
+
 type ChainEvent struct {
 	Header       *types.Header
 	Receipts     []*types.Receipt
@@ -52,3 +64,10 @@ type ChainHeadEvent struct {
 }
 
 type HighestVerifiedBlockEvent struct{ Header *types.Header }
+
+// NewPayloadEvent is posted when engine_newPayloadVX processes a block.
+type NewPayloadEvent struct {
+	Hash           common.Hash
+	Number         uint64
+	ProcessingTime time.Duration
+}
