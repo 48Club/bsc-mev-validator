@@ -96,10 +96,17 @@ func (s *MevGRPCServer) SendBidBlock(ctx context.Context, req *mevpb.BidBlockReq
 		return fail(buildertypes.NewInvalidBidError("invalid BidBlock RLP"))
 	}
 
-	bidHash, err := s.api.SendBidBlock(ctx, buildertypes.BidBlockArgs{
+	args := buildertypes.BidBlockArgs{
 		BidBlock:  &bidBlock,
 		Signature: req.Signature,
-	})
+	}
+	// The nontaxableFee argument rides in the request as well, so a BidBlock sent
+	// over gRPC means the same as one sent over mev_sendBidBlock. A client built
+	// from the upstream proto never sets it and gets the upstream behaviour.
+	if err := args.ApplyGRPCFields(req); err != nil {
+		return fail(err)
+	}
+	bidHash, err := s.api.SendBidBlock(ctx, args)
 	if err != nil {
 		return fail(err)
 	}
