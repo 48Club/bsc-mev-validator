@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -45,7 +46,6 @@ type ValidationOptions struct {
 	MaxSize      uint64   // Maximum size of a transaction that the caller can meaningfully handle
 	MinTip       *big.Int // Minimum gas tip needed to allow a transaction into the caller pool
 	MaxBlobCount int      // Maximum number of blobs allowed per transaction
-	MaxGas       uint64   // Max acceptable transaction gas in the txpool
 }
 
 // ValidationFunction is an method type which the pools use to perform the tx-validations which do not
@@ -87,10 +87,12 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 		return fmt.Errorf("%w: type %d rejected, pool not yet in Prague", core.ErrTxTypeNotSupported, tx.Type())
 	}
 	// Check whether the init code size has been exceeded
-	if rules.IsShanghai && tx.To() == nil && len(tx.Data()) > params.MaxInitCodeSize {
-		return fmt.Errorf("%w: code size %v, limit %v", core.ErrMaxInitCodeSizeExceeded, len(tx.Data()), params.MaxInitCodeSize)
+	if tx.To() == nil {
+		if err := vm.CheckMaxInitCodeSize(&rules, uint64(len(tx.Data()))); err != nil {
+			return err
+		}
 	}
-	if rules.IsOsaka && tx.Gas() > params.MaxTxGas {
+	if rules.IsOsaka && !rules.IsAmsterdam && tx.Gas() > params.MaxTxGas {
 		return fmt.Errorf("%w (cap: %d, tx: %d)", core.ErrGasLimitTooHigh, params.MaxTxGas, tx.Gas())
 	}
 	// Transactions can't be negative. This may never happen using RLP decoded
@@ -101,11 +103,6 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 	// Ensure the transaction doesn't exceed the current block limit gas
 	if head.GasLimit < tx.Gas() {
 		return ErrGasLimit
-	}
-
-	// Ensure the transaction doesn't exceed the current miner max acceptable limit gas
-	if opts.MaxGas > 0 && tx.Gas() > opts.MaxGas {
-		return fmt.Errorf("%w (cap: %d, tx: %d)", core.ErrGasLimitTooHigh, opts.MaxGas, tx.Gas())
 	}
 
 	// Sanity check for extremely large numbers (supported by RLP or RPC)
@@ -129,16 +126,16 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 	}
 	// Ensure the transaction has more gas than the bare minimum needed to cover
 	// the transaction metadata
-	intrGas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.SetCodeAuthorizations(), tx.To() == nil, true, rules.IsIstanbul, rules.IsShanghai)
+	intrGas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.SetCodeAuthorizations(), tx.To() == nil, true, rules.IsIstanbul, rules.IsShanghai, rules.IsAmsterdam)
 	if err != nil {
 		return err
 	}
-	if tx.Gas() < intrGas {
-		return fmt.Errorf("%w: gas %v, minimum needed %v", core.ErrIntrinsicGas, tx.Gas(), intrGas)
+	if tx.Gas() < intrGas.RegularGas {
+		return fmt.Errorf("%w: gas %v, minimum needed %v", core.ErrIntrinsicGas, tx.Gas(), intrGas.RegularGas)
 	}
 	// Ensure the transaction can cover floor data gas.
-	if opts.Config.IsPrague(head.Number, head.Time) {
-		floorDataGas, err := core.FloorDataGas(tx.Data())
+	if rules.IsPrague {
+		floorDataGas, err := core.FloorDataGas(rules, tx.Data(), tx.AccessList())
 		if err != nil {
 			return err
 		}
@@ -167,6 +164,15 @@ func ValidateBlobTx(tx *types.Transaction, head *types.Header, opts *ValidationO
 	sidecar := tx.BlobTxSidecar()
 	if sidecar == nil {
 		return errors.New("missing sidecar in blob transaction")
+	}
+	// Ensure the sidecar is constructed with the correct version, consistent
+	// with the current fork.
+	version := types.BlobSidecarVersion0
+	if opts != nil && head != nil && opts.Config.IsNotInBSC() && opts.Config.IsOsaka(head.Number, head.Time) {
+		version = types.BlobSidecarVersion1
+	}
+	if sidecar.Version != version {
+		return fmt.Errorf("unexpected sidecar version, want: %d, got: %d", version, sidecar.Version)
 	}
 	// Ensure the blob fee cap satisfies the minimum blob gas price
 	if tx.BlobGasFeeCapIntCmp(blobTxMinBlobGasPrice) < 0 {

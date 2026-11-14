@@ -175,8 +175,6 @@ type AncientWriter interface {
 
 	// ResetTable will reset certain table with new start point
 	ResetTable(kind string, startAt uint64, onlyEmpty bool) error
-
-	ResetTableForIncr(kind string, startAt uint64, onlyEmpty bool) error
 }
 
 type FreezerEnv struct {
@@ -188,10 +186,6 @@ type FreezerEnv struct {
 type AncientFreezer interface {
 	// SetupFreezerEnv provides params.ChainConfig for checking hark forks, like isCancun.
 	SetupFreezerEnv(env *FreezerEnv, blockHistory uint64) error
-
-	// CleanBlock cleans block data in pebble and chain freezer.
-	// WARN: it's only used in the incremental snapshot situation.
-	CleanBlock(kvStore KeyValueStore, start uint64) error
 }
 
 // AncientWriteOp is given to the function argument of ModifyAncients.
@@ -215,17 +209,11 @@ type AncientStater interface {
 	AncientDatadir() (string, error)
 }
 
-// StateStoreReader wraps the StateStoreReader method.
-type StateStoreReader interface {
-	StateStoreReader() Reader
-}
-
 // Reader contains the methods required to read data from both key-value as well as
 // immutable ancient data.
 type Reader interface {
 	KeyValueReader
 	AncientReader
-	StateStoreReader
 }
 
 // AncientStore contains all the methods required to allow handling different
@@ -235,12 +223,6 @@ type AncientStore interface {
 	AncientWriter
 	AncientStater
 	io.Closer
-}
-
-type StateStore interface {
-	SetStateStore(state Database)
-	GetStateStore() Database
-	HasSeparateStateStore() bool
 }
 
 // ResettableAncientStore extends the AncientStore interface by adding a Reset method.
@@ -254,8 +236,6 @@ type ResettableAncientStore interface {
 // Database contains all the methods required by the high level database to not
 // only access the key-value data store but also the ancient chain store.
 type Database interface {
-	StateStore
-	StateStoreReader
 	AncientFreezer
 
 	KeyValueStore

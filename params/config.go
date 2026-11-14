@@ -252,10 +252,11 @@ var (
 		FermiTime:           newUint64(1768357800), // 2026-01-14 02:30:00 AM UTC
 		OsakaTime:           newUint64(1777343400), // 2026-04-28 02:30:00 AM UTC
 		MendelTime:          newUint64(1777343400), // 2026-04-28 02:30:00 AM UTC
+		PasteurTime:         newUint64(1787625000), // 2026-08-25 02:30:00 AM UTC
+		JennerTime:          newUint64(1796697000), // 2026-12-08 02:30:00 AM UTC
 		BPO1Time:            nil,                   // will be skipped in BSC
 		BPO2Time:            nil,                   // will be skipped in BSC
 		AmsterdamTime:       nil,
-		PasteurTime:         nil,
 
 		Parlia: &ParliaConfig{},
 		BlobScheduleConfig: &BlobScheduleConfig{
@@ -306,10 +307,11 @@ var (
 		FermiTime:           newUint64(1762741500), // 2025-11-10 02:25:00 AM UTC
 		OsakaTime:           newUint64(1774319400), // 2026-03-24 02:30:00 AM UTC
 		MendelTime:          newUint64(1774319400), // 2026-03-24 02:30:00 AM UTC
+		PasteurTime:         newUint64(1784601000), // 2026-07-21 02:30:00 AM UTC
+		JennerTime:          newUint64(1793241000), // 2026-10-29 02:30:00 AM UTC
 		BPO1Time:            nil,                   // will be skipped in BSC
 		BPO2Time:            nil,                   // will be skipped in BSC
 		AmsterdamTime:       nil,
-		PasteurTime:         nil,
 
 		Parlia: &ParliaConfig{},
 		BlobScheduleConfig: &BlobScheduleConfig{
@@ -362,10 +364,11 @@ var (
 		// TODO: set them to `0` when passed on the mainnet
 		OsakaTime:     nil,
 		MendelTime:    nil,
+		PasteurTime:   nil,
+		JennerTime:    nil,
 		BPO1Time:      nil, // will be skipped in BSC
 		BPO2Time:      nil, // will be skipped in BSC
 		AmsterdamTime: nil,
-		PasteurTime:   nil,
 
 		Parlia: &ParliaConfig{},
 		BlobScheduleConfig: &BlobScheduleConfig{
@@ -438,7 +441,7 @@ var (
 		CancunTime:              nil,
 		PragueTime:              nil,
 		OsakaTime:               nil,
-		VerkleTime:              nil,
+		UBTTime:                 nil,
 		Ethash:                  new(EthashConfig),
 		Clique:                  nil,
 	}
@@ -494,7 +497,7 @@ var (
 		CancunTime:              nil,
 		PragueTime:              nil,
 		OsakaTime:               nil,
-		VerkleTime:              nil,
+		UBTTime:                 nil,
 		TerminalTotalDifficulty: big.NewInt(math.MaxInt64),
 		Ethash:                  nil,
 		Clique:                  &CliqueConfig{Period: 0, Epoch: 30000},
@@ -524,7 +527,7 @@ var (
 		CancunTime:              nil,
 		PragueTime:              nil,
 		OsakaTime:               nil,
-		VerkleTime:              nil,
+		UBTTime:                 nil,
 		TerminalTotalDifficulty: big.NewInt(math.MaxInt64),
 		Ethash:                  new(EthashConfig),
 		Clique:                  nil,
@@ -554,7 +557,7 @@ var (
 		CancunTime:              newUint64(0),
 		PragueTime:              newUint64(0),
 		OsakaTime:               newUint64(0),
-		VerkleTime:              nil,
+		UBTTime:                 nil,
 		TerminalTotalDifficulty: big.NewInt(0),
 		Ethash:                  new(EthashConfig),
 		Clique:                  nil,
@@ -589,7 +592,7 @@ var (
 		CancunTime:              nil,
 		PragueTime:              nil,
 		OsakaTime:               nil,
-		VerkleTime:              nil,
+		UBTTime:                 nil,
 		TerminalTotalDifficulty: big.NewInt(math.MaxInt64),
 		Ethash:                  new(EthashConfig),
 		Clique:                  nil,
@@ -722,14 +725,15 @@ type ChainConfig struct {
 	FermiTime      *uint64 `json:"fermiTime,omitempty"`      // Fermi switch time (nil = no fork, 0 = already on fermi)
 	OsakaTime      *uint64 `json:"osakaTime,omitempty"`      // Osaka switch time (nil = no fork, 0 = already on osaka)
 	MendelTime     *uint64 `json:"mendelTime,omitempty"`     // Mendel switch time (nil = no fork, 0 = already on mendel)
+	PasteurTime    *uint64 `json:"pasteurTime,omitempty"`    // Pasteur switch time (nil = no fork, 0 = already on pasteur)
+	JennerTime     *uint64 `json:"jennerTime,omitempty"`     // Jenner switch time (nil = no fork, 0 = already on jenner)
 	BPO1Time       *uint64 `json:"bpo1Time,omitempty"`       // BPO1 switch time (nil = no fork, 0 = already on bpo1)
 	BPO2Time       *uint64 `json:"bpo2Time,omitempty"`       // BPO2 switch time (nil = no fork, 0 = already on bpo2)
 	BPO3Time       *uint64 `json:"bpo3Time,omitempty"`       // BPO3 switch time (nil = no fork, 0 = already on bpo3)
 	BPO4Time       *uint64 `json:"bpo4Time,omitempty"`       // BPO4 switch time (nil = no fork, 0 = already on bpo4)
 	BPO5Time       *uint64 `json:"bpo5Time,omitempty"`       // BPO5 switch time (nil = no fork, 0 = already on bpo5)
 	AmsterdamTime  *uint64 `json:"amsterdamTime,omitempty"`  // Amsterdam switch time (nil = no fork, 0 = already on amsterdam)
-	PasteurTime    *uint64 `json:"pasteurTime,omitempty"`    // PasteurTime switch time (nil = no fork, 0 = already on pasteurTime)
-	VerkleTime     *uint64 `json:"verkleTime,omitempty"`     // Verkle switch time (nil = no fork, 0 = already on verkle)
+	UBTTime        *uint64 `json:"ubtTime,omitempty"`        // UBT switch time (nil = no fork, 0 = already on UBT)
 
 	// TerminalTotalDifficulty is the amount of total difficulty reached by
 	// the network that triggers the consensus upgrade.
@@ -740,18 +744,18 @@ type ChainConfig struct {
 
 	DepositContractAddress common.Address `json:"depositContractAddress,omitempty"`
 
-	// EnableVerkleAtGenesis is a flag that specifies whether the network uses
+	// EnableUBTAtGenesis is a flag that specifies whether the network uses
 	// the Verkle tree starting from the genesis block. If set to true, the
-	// genesis state will be committed using the Verkle tree, eliminating the
-	// need for any Verkle transition later.
+	// genesis state will be committed using the Binary tree, eliminating the
+	// need for any Binary transition later.
 	//
-	// This is a temporary flag only for verkle devnet testing, where verkle is
+	// This is a temporary flag only for binary devnet testing, where binary is
 	// activated at genesis, and the configured activation date has already passed.
 	//
-	// In production networks (mainnet and public testnets), verkle activation
+	// In production networks (mainnet and public testnets), binary activation
 	// always occurs after the genesis block, making this flag irrelevant in
 	// those cases.
-	EnableVerkleAtGenesis bool `json:"enableVerkleAtGenesis,omitempty"`
+	EnableUBTAtGenesis bool `json:"enableUBTAtGenesis,omitempty"`
 
 	RamanujanBlock  *big.Int `json:"ramanujanBlock,omitempty"`  // ramanujanBlock switch block (nil = no fork, 0 = already activated)
 	NielsBlock      *big.Int `json:"nielsBlock,omitempty"`      // nielsBlock switch block (nil = no fork, 0 = already activated)
@@ -915,6 +919,16 @@ func (c *ChainConfig) String() string {
 		MendelTime = big.NewInt(0).SetUint64(*c.MendelTime)
 	}
 
+	var PasteurTime *big.Int
+	if c.PasteurTime != nil {
+		PasteurTime = big.NewInt(0).SetUint64(*c.PasteurTime)
+	}
+
+	var JennerTime *big.Int
+	if c.JennerTime != nil {
+		JennerTime = big.NewInt(0).SetUint64(*c.JennerTime)
+	}
+
 	var BPO1Time *big.Int
 	if c.BPO1Time != nil {
 		BPO1Time = big.NewInt(0).SetUint64(*c.BPO1Time)
@@ -925,15 +939,10 @@ func (c *ChainConfig) String() string {
 		BPO2Time = big.NewInt(0).SetUint64(*c.BPO2Time)
 	}
 
-	var PasteurTime *big.Int
-	if c.PasteurTime != nil {
-		PasteurTime = big.NewInt(0).SetUint64(*c.PasteurTime)
-	}
-
 	return fmt.Sprintf("{ChainID: %v, Engine: %v, Homestead: %v DAO: %v DAOSupport: %v EIP150: %v EIP155: %v EIP158: %v Byzantium: %v Constantinople: %v Petersburg: %v Istanbul: %v, Muir Glacier: %v, Ramanujan: %v, Niels: %v, "+
 		"MirrorSync: %v, Bruno: %v, Berlin: %v, YOLO v3: %v, CatalystBlock: %v, London: %v, ArrowGlacier: %v, MergeFork:%v, Euler: %v, Gibbs: %v, Nano: %v, Moran: %v, Planck: %v,Luban: %v, Plato: %v, Hertz: %v, Hertzfix: %v, "+
 		"ShanghaiTime: %v, KeplerTime: %v, FeynmanTime: %v, FeynmanFixTime: %v, CancunTime: %v, HaberTime: %v, HaberFixTime: %v, BohrTime: %v, PascalTime: %v, PragueTime: %v, LorentzTime: %v, MaxwellTime: %v, FermiTime: %v, "+
-		"OsakaTime: %v, MendelTime: %v, BPO1Time: %v, BPO2Time: %v, PasteurTime: %v}",
+		"OsakaTime: %v, MendelTime: %v, PasteurTime: %v, JennerTime: %v, BPO1Time: %v, BPO2Time: %v}",
 		c.ChainID,
 		engine,
 		c.HomesteadBlock,
@@ -981,9 +990,10 @@ func (c *ChainConfig) String() string {
 		FermiTime,
 		OsakaTime,
 		MendelTime,
+		PasteurTime,
+		JennerTime,
 		BPO1Time,
 		BPO2Time,
-		PasteurTime,
 	)
 }
 
@@ -1007,13 +1017,13 @@ type BlobScheduleConfig struct {
 	Cancun    *BlobConfig `json:"cancun,omitempty"`
 	Prague    *BlobConfig `json:"prague,omitempty"`
 	Osaka     *BlobConfig `json:"osaka,omitempty"`
-	Verkle    *BlobConfig `json:"verkle,omitempty"`
 	BPO1      *BlobConfig `json:"bpo1,omitempty"`
 	BPO2      *BlobConfig `json:"bpo2,omitempty"`
 	BPO3      *BlobConfig `json:"bpo3,omitempty"`
 	BPO4      *BlobConfig `json:"bpo4,omitempty"`
 	BPO5      *BlobConfig `json:"bpo5,omitempty"`
 	Amsterdam *BlobConfig `json:"amsterdam,omitempty"`
+	UBT       *BlobConfig `json:"ubt,omitempty"`
 }
 
 // IsHomestead returns whether num is either equal to the homestead block or greater.
@@ -1444,6 +1454,41 @@ func (c *ChainConfig) IsOnMendel(currentBlockNumber *big.Int, lastBlockTime uint
 	return !c.IsMendel(lastBlockNumber, lastBlockTime) && c.IsMendel(currentBlockNumber, currentBlockTime)
 }
 
+// IsPasteur returns whether time is either equal to the Pasteur fork time or greater.
+func (c *ChainConfig) IsPasteur(num *big.Int, time uint64) bool {
+	return c.IsLondon(num) && isTimestampForked(c.PasteurTime, time)
+}
+
+// IsOnPasteur eturns whether currentBlockTime is either equal to the Pasteur fork time or greater firstly.
+func (c *ChainConfig) IsOnPasteur(currentBlockNumber *big.Int, lastBlockTime uint64, currentBlockTime uint64) bool {
+	lastBlockNumber := new(big.Int)
+	if currentBlockNumber.Cmp(big.NewInt(1)) >= 0 {
+		lastBlockNumber.Sub(currentBlockNumber, big.NewInt(1))
+	}
+	return !c.IsPasteur(lastBlockNumber, lastBlockTime) && c.IsPasteur(currentBlockNumber, currentBlockTime)
+}
+
+// IsJenner returns whether time is either equal to the Jenner fork time or
+// greater. Jenner (BEP-706) is BSC-only, so this is gated on IsInBSC() —
+// unlike IsPasteur/IsMendel/IsFermi, which have no such gate today. Those
+// are BSC-only in practice only because nothing sets their *Time field on
+// a non-Parlia config; for Jenner we make that guarantee explicit instead
+// of relying on convention, so a non-Parlia/non-BSC config can never
+// accidentally activate this BSC-only precompile even if some future code
+// path sets JennerTime on it.
+func (c *ChainConfig) IsJenner(num *big.Int, time uint64) bool {
+	return c.IsInBSC() && c.IsLondon(num) && isTimestampForked(c.JennerTime, time)
+}
+
+// IsOnJenner returns whether currentBlockTime is either equal to the Jenner fork time or greater firstly.
+func (c *ChainConfig) IsOnJenner(currentBlockNumber *big.Int, lastBlockTime uint64, currentBlockTime uint64) bool {
+	lastBlockNumber := new(big.Int)
+	if currentBlockNumber.Cmp(big.NewInt(1)) >= 0 {
+		lastBlockNumber.Sub(currentBlockNumber, big.NewInt(1))
+	}
+	return !c.IsJenner(lastBlockNumber, lastBlockTime) && c.IsJenner(currentBlockNumber, currentBlockTime)
+}
+
 // IsBPO1 returns whether time is either equal to the BPO1 fork time or greater.
 func (c *ChainConfig) IsBPO1(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.BPO1Time, time)
@@ -1474,26 +1519,12 @@ func (c *ChainConfig) IsAmsterdam(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.AmsterdamTime, time)
 }
 
-// IsPasteur returns whether time is either equal to the Pasteur fork time or greater.
-func (c *ChainConfig) IsPasteur(num *big.Int, time uint64) bool {
-	return c.IsLondon(num) && isTimestampForked(c.PasteurTime, time)
+// IsUBT returns whether time is either equal to the Verkle fork time or greater.
+func (c *ChainConfig) IsUBT(num *big.Int, time uint64) bool {
+	return c.IsLondon(num) && isTimestampForked(c.UBTTime, time)
 }
 
-// IsOnPasteur eturns whether currentBlockTime is either equal to the Pasteur fork time or greater firstly.
-func (c *ChainConfig) IsOnPasteur(currentBlockNumber *big.Int, lastBlockTime uint64, currentBlockTime uint64) bool {
-	lastBlockNumber := new(big.Int)
-	if currentBlockNumber.Cmp(big.NewInt(1)) >= 0 {
-		lastBlockNumber.Sub(currentBlockNumber, big.NewInt(1))
-	}
-	return !c.IsPasteur(lastBlockNumber, lastBlockTime) && c.IsPasteur(currentBlockNumber, currentBlockTime)
-}
-
-// IsVerkle returns whether time is either equal to the Verkle fork time or greater.
-func (c *ChainConfig) IsVerkle(num *big.Int, time uint64) bool {
-	return c.IsLondon(num) && isTimestampForked(c.VerkleTime, time)
-}
-
-// IsVerkleGenesis checks whether the verkle fork is activated at the genesis block.
+// IsUBTGenesis checks whether the verkle fork is activated at the genesis block.
 //
 // Verkle mode is considered enabled if the verkle fork time is configured,
 // regardless of whether the local time has surpassed the fork activation time.
@@ -1503,13 +1534,13 @@ func (c *ChainConfig) IsVerkle(num *big.Int, time uint64) bool {
 // In production networks (mainnet and public testnets), verkle activation
 // always occurs after the genesis block, making this function irrelevant in
 // those cases.
-func (c *ChainConfig) IsVerkleGenesis() bool {
-	return c.EnableVerkleAtGenesis
+func (c *ChainConfig) IsUBTGenesis() bool {
+	return c.EnableUBTAtGenesis
 }
 
 // IsEIP4762 returns whether eip 4762 has been activated at given block.
 func (c *ChainConfig) IsEIP4762(num *big.Int, time uint64) bool {
-	return c.IsVerkle(num, time)
+	return c.IsUBT(num, time)
 }
 
 // CheckCompatible checks whether scheduled fork transitions have been imported
@@ -1575,14 +1606,15 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "fermiTime", timestamp: c.FermiTime},
 		{name: "osakaTime", timestamp: c.OsakaTime},
 		{name: "mendelTime", timestamp: c.MendelTime},
-		{name: "verkleTime", timestamp: c.VerkleTime, optional: true},
+		{name: "pasteurTime", timestamp: c.PasteurTime},
+		{name: "jennerTime", timestamp: c.JennerTime, optional: true},
+		{name: "ubtTime", timestamp: c.UBTTime, optional: true},
 		{name: "bpo1", timestamp: c.BPO1Time, optional: true},
 		{name: "bpo2", timestamp: c.BPO2Time, optional: true},
 		{name: "bpo3", timestamp: c.BPO3Time, optional: true},
 		{name: "bpo4", timestamp: c.BPO4Time, optional: true},
 		{name: "bpo5", timestamp: c.BPO5Time, optional: true},
 		{name: "amsterdam", timestamp: c.AmsterdamTime, optional: true},
-		{name: "pasteurTime", timestamp: c.PasteurTime, optional: true},
 	} {
 		if lastFork.name != "" {
 			switch {
@@ -1804,8 +1836,14 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, headNumber *big.Int, 
 	if isForkTimestampIncompatible(c.MendelTime, newcfg.MendelTime, headTimestamp) {
 		return newTimestampCompatError("Mendel fork timestamp", c.MendelTime, newcfg.MendelTime)
 	}
-	if isForkTimestampIncompatible(c.VerkleTime, newcfg.VerkleTime, headTimestamp) {
-		return newTimestampCompatError("Verkle fork timestamp", c.VerkleTime, newcfg.VerkleTime)
+	if isForkTimestampIncompatible(c.PasteurTime, newcfg.PasteurTime, headTimestamp) {
+		return newTimestampCompatError("Pasteur fork timestamp", c.PasteurTime, newcfg.PasteurTime)
+	}
+	if isForkTimestampIncompatible(c.JennerTime, newcfg.JennerTime, headTimestamp) {
+		return newTimestampCompatError("Jenner fork timestamp", c.JennerTime, newcfg.JennerTime)
+	}
+	if isForkTimestampIncompatible(c.UBTTime, newcfg.UBTTime, headTimestamp) {
+		return newTimestampCompatError("UBT fork timestamp", c.UBTTime, newcfg.UBTTime)
 	}
 	if isForkTimestampIncompatible(c.BPO1Time, newcfg.BPO1Time, headTimestamp) {
 		return newTimestampCompatError("BPO1 fork timestamp", c.BPO1Time, newcfg.BPO1Time)
@@ -1824,9 +1862,6 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, headNumber *big.Int, 
 	}
 	if isForkTimestampIncompatible(c.AmsterdamTime, newcfg.AmsterdamTime, headTimestamp) {
 		return newTimestampCompatError("Amsterdam fork timestamp", c.AmsterdamTime, newcfg.AmsterdamTime)
-	}
-	if isForkTimestampIncompatible(c.PasteurTime, newcfg.PasteurTime, headTimestamp) {
-		return newTimestampCompatError("Pasteur fork timestamp", c.PasteurTime, newcfg.PasteurTime)
 	}
 	return nil
 }
@@ -1848,8 +1883,6 @@ func (c *ChainConfig) LatestFork(time uint64) forks.Fork {
 	london := c.LondonBlock
 
 	switch {
-	case c.IsPasteur(london, time):
-		return forks.Pasteur
 	case c.IsAmsterdam(london, time):
 		return forks.Amsterdam
 	case c.IsBPO5(london, time):
@@ -1862,6 +1895,12 @@ func (c *ChainConfig) LatestFork(time uint64) forks.Fork {
 		return forks.BPO2
 	case c.IsBPO1(london, time):
 		return forks.BPO1
+	// Jenner (BEP-706) is the BSC fork right after Pasteur, before the
+	// (far-future, upstream) BPO/Amsterdam forks.
+	case c.IsJenner(london, time):
+		return forks.Jenner
+	case c.IsPasteur(london, time):
+		return forks.Pasteur
 	case c.IsMendel(london, time):
 		return forks.Mendel
 	case c.IsOsaka(london, time):
@@ -1896,7 +1935,7 @@ func (c *ChainConfig) BlobConfig(fork forks.Fork) *BlobConfig {
 		return c.BlobScheduleConfig.BPO2
 	case forks.BPO1:
 		return c.BlobScheduleConfig.BPO1
-	case forks.Osaka:
+	case forks.Jenner, forks.Pasteur, forks.Mendel, forks.Osaka:
 		return c.BlobScheduleConfig.Osaka
 	case forks.Fermi, forks.Maxwell, forks.Lorentz, forks.Prague:
 		return c.BlobScheduleConfig.Prague
@@ -1937,8 +1976,6 @@ func (c *ChainConfig) ActiveSystemContracts(time uint64) map[string]common.Addre
 // the fork isn't defined or isn't a time-based fork.
 func (c *ChainConfig) Timestamp(fork forks.Fork) *uint64 {
 	switch {
-	case fork == forks.Pasteur:
-		return c.PasteurTime
 	case fork == forks.Amsterdam:
 		return c.AmsterdamTime
 	case fork == forks.BPO5:
@@ -1951,6 +1988,10 @@ func (c *ChainConfig) Timestamp(fork forks.Fork) *uint64 {
 		return c.BPO2Time
 	case fork == forks.BPO1:
 		return c.BPO1Time
+	case fork == forks.Jenner:
+		return c.JennerTime
+	case fork == forks.Pasteur:
+		return c.PasteurTime
 	case fork == forks.Mendel:
 		return c.MendelTime
 	case fork == forks.Osaka:
@@ -2107,7 +2148,6 @@ func (err *ConfigCompatError) Error() string {
 // Rules is a one time interface meaning that it shouldn't be used in between transition
 // phases.
 type Rules struct {
-	ChainID                                                 *big.Int
 	IsHomestead, IsEIP150, IsEIP155, IsEIP158               bool
 	IsEIP2929, IsEIP4762                                    bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
@@ -2123,20 +2163,20 @@ type Rules struct {
 	IsShanghai, IsKepler, IsFeynman, IsCancun, IsHaber      bool
 	IsBohr, IsPascal, IsPrague, IsLorentz, IsMaxwell        bool
 	IsFermi, IsOsaka, IsMendel                              bool
-	IsAmsterdam, IsPasteur, IsVerkle                        bool
+	IsPasteur, IsAmsterdam, IsUBT                           bool
+	IsJenner                                                bool
+	// IsInBSC is true when Parlia is configured (BSC chains). core/vm uses it to
+	// select the BSC precompile set (…ForBSC); non-BSC chains (e.g. the standard
+	// state / execution-spec tests) get the standard upstream set.
+	IsInBSC bool
 }
 
 // Rules ensures c's ChainID is not nil.
 func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules {
-	chainID := c.ChainID
-	if chainID == nil {
-		chainID = new(big.Int)
-	}
 	// disallow setting Merge out of order
 	isMerge = isMerge && c.IsLondon(num) // always false in BSC
-	isVerkle := isMerge && c.IsVerkle(num, timestamp)
+	isUBT := isMerge && c.IsUBT(num, timestamp)
 	return Rules{
-		ChainID:          new(big.Int).Set(chainID),
 		IsHomestead:      c.IsHomestead(num),
 		IsEIP150:         c.IsEIP150(num),
 		IsEIP155:         c.IsEIP155(num),
@@ -2146,7 +2186,7 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsPetersburg:     c.IsPetersburg(num),
 		IsIstanbul:       c.IsIstanbul(num),
 		IsBerlin:         c.IsBerlin(num),
-		IsEIP2929:        c.IsBerlin(num) && !isVerkle,
+		IsEIP2929:        c.IsBerlin(num) && !isUBT,
 		IsLondon:         c.IsLondon(num),
 		IsMerge:          isMerge,
 		IsNano:           c.IsNano(num),
@@ -2169,9 +2209,14 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsFermi:          c.IsFermi(num, timestamp),
 		IsOsaka:          (isMerge || c.IsInBSC()) && c.IsOsaka(num, timestamp),
 		IsMendel:         c.IsMendel(num, timestamp),
-		IsAmsterdam:      (isMerge || c.IsInBSC()) && c.IsAmsterdam(num, timestamp),
 		IsPasteur:        c.IsPasteur(num, timestamp),
-		IsVerkle:         c.IsVerkle(num, timestamp),
-		IsEIP4762:        isVerkle,
+		IsAmsterdam:      (isMerge || c.IsInBSC()) && c.IsAmsterdam(num, timestamp),
+		// IsJenner needs no (isMerge || IsInBSC()) prefix: unlike Amsterdam etc.
+		// (fork names shared with upstream ethereum), Jenner is a BSC-only fork
+		// and IsJenner() itself embeds the IsInBSC() gate.
+		IsJenner:  c.IsJenner(num, timestamp),
+		IsUBT:     isUBT,
+		IsEIP4762: isUBT,
+		IsInBSC:   c.IsInBSC(),
 	}
 }

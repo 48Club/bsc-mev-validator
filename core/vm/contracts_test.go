@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/params"
 )
 
 // precompiledTest defines the input/output pairs for precompiled contract tests.
@@ -100,7 +101,7 @@ func testPrecompiled(addr string, test precompiledTest, t *testing.T) {
 	in := common.Hex2Bytes(test.Input)
 	gas := p.RequiredGas(in)
 	t.Run(fmt.Sprintf("%s-Gas=%d", test.Name, gas), func(t *testing.T) {
-		if res, _, err := RunPrecompiledContract(p, in, gas, nil); err != nil {
+		if res, _, err := RunPrecompiledContract(nil, p, common.HexToAddress(addr), in, NewGasBudget(gas), nil, params.Rules{}, BlockContext{}); err != nil {
 			t.Error(err)
 		} else if common.Bytes2Hex(res) != test.Expected {
 			t.Errorf("Expected %v, got %v", test.Expected, common.Bytes2Hex(res))
@@ -122,7 +123,7 @@ func testPrecompiledOOG(addr string, test precompiledTest, t *testing.T) {
 	gas := test.Gas - 1
 
 	t.Run(fmt.Sprintf("%s-Gas=%d", test.Name, gas), func(t *testing.T) {
-		_, _, err := RunPrecompiledContract(p, in, gas, nil)
+		_, _, err := RunPrecompiledContract(nil, p, common.HexToAddress(addr), in, NewGasBudget(gas), nil, params.Rules{}, BlockContext{})
 		if err.Error() != "out of gas" {
 			t.Errorf("Expected error [out of gas], got [%v]", err)
 		}
@@ -139,7 +140,7 @@ func testPrecompiledFailure(addr string, test precompiledFailureTest, t *testing
 	in := common.Hex2Bytes(test.Input)
 	gas := p.RequiredGas(in)
 	t.Run(test.Name, func(t *testing.T) {
-		_, _, err := RunPrecompiledContract(p, in, gas, nil)
+		_, _, err := RunPrecompiledContract(nil, p, common.HexToAddress(addr), in, NewGasBudget(gas), nil, params.Rules{}, BlockContext{})
 		if err.Error() != test.ExpectedError {
 			t.Errorf("Expected error [%v], got [%v]", test.ExpectedError, err)
 		}
@@ -170,7 +171,7 @@ func benchmarkPrecompiled(addr string, test precompiledTest, bench *testing.B) {
 		start := time.Now()
 		for bench.Loop() {
 			copy(data, in)
-			res, _, err = RunPrecompiledContract(p, data, reqGas, nil)
+			res, _, err = RunPrecompiledContract(nil, p, common.HexToAddress(addr), data, NewGasBudget(reqGas), nil, params.Rules{}, BlockContext{})
 		}
 		elapsed := uint64(time.Since(start))
 		if elapsed < 1 {
@@ -352,6 +353,25 @@ func TestPrecompiledBLS12381MapG1(t *testing.T)      { testJson("blsMapG1", "f0f
 func TestPrecompiledBLS12381MapG2(t *testing.T)      { testJson("blsMapG2", "f10", t) }
 
 func TestPrecompiledBlsSignatureVerify(t *testing.T) { testJson("blsSignatureVerify", "66", t) }
+
+func TestActivePrecompiledContractsUsesPasteurVariants(t *testing.T) {
+	rules := params.Rules{IsOsaka: true, IsMendel: true, IsPasteur: true}
+	precompiles := ActivePrecompiledContracts(rules)
+
+	requirePrecompile := func(addr byte) PrecompiledContract {
+		t.Helper()
+
+		precompile, ok := precompiles[common.BytesToAddress([]byte{addr})]
+		if !ok {
+			t.Fatalf("missing precompile 0x%02x", addr)
+		}
+		return precompile
+	}
+
+	if got := requirePrecompile(0x67).Name(); got != "COMET_BFT_LIGHT_BLOCK_VALIDATE_PASTEUR" {
+		t.Fatalf("unexpected Pasteur 0x67 precompile: %s", got)
+	}
+}
 
 func TestPrecompiledPointEvaluation(t *testing.T) { testJson("pointEvaluation", "0a", t) }
 

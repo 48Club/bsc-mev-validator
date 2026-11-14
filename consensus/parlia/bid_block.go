@@ -1,0 +1,318 @@
+package parlia
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"math/big"
+	"slices"
+
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/systemcontracts"
+	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/ethereum/go-ethereum/core/types"
+	buildertypes "github.com/ethereum/go-ethereum/core/types/builder"
+	"github.com/ethereum/go-ethereum/internal/ethapi"
+	"github.com/ethereum/go-ethereum/rpc"
+)
+
+var signableSystemTxSelectors = map[string][4]byte{
+	"deposit":                  {0xf3, 0x40, 0xfa, 0x01},
+	"distributeFinalityReward": {0x30, 0x0c, 0x35, 0x67},
+	"updateValidatorSetV2":     {0x1e, 0x4c, 0x15, 0x24},
+}
+
+type expectedSystemTxEntry struct {
+	method   string
+	selector [4]byte
+}
+
+// PrepareForBidBlock is Prepare with Coinbase set to the in-turn validator instead of p.val.
+func (p *Parlia) PrepareForBidBlock(chain consensus.ChainHeaderReader, header *types.Header) error {
+	// Coinbase must be set before prepare(): backOffTime and calcDifficulty depend on it.
+	number := header.Number.Uint64()
+	snap, err := p.snapshot(chain, number-1, header.ParentHash, nil)
+	if err != nil {
+		return err
+	}
+	header.Coinbase = snap.inturnValidator()
+	return p.prepare(chain, header)
+}
+
+// FinalizeAndAssembleBidBlock assembles a BidBlock with unsigned system txs.
+func (p *Parlia) FinalizeAndAssembleBidBlock(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB,
+	body *types.Body, receipts []*types.Receipt, tracer *tracing.Hooks) (*types.Block, []*types.Receipt, error) {
+	block, receipts, err := p.finalizeAndAssemble(chain, header, state, body, receipts, tracer, systemTxPacking)
+	if err != nil {
+		return nil, nil, err
+	}
+	return block, receipts, nil
+}
+
+// SignSystemTx signs a BidBlock system tx with the validator key.
+func (p *Parlia) SignSystemTx(tx *types.Transaction, chainID *big.Int) (*types.Transaction, error) {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+	if p.signTxFn == nil {
+		return nil, errors.New("signTxFn not set")
+	}
+	return p.signTxFn(accounts.Account{Address: p.val}, tx, chainID)
+}
+
+// isUnsignedSystemTxCandidate reports whether tx looks like an unsigned
+// BidBlock system tx. It does not recover the sender.
+func (p *Parlia) isUnsignedSystemTxCandidate(tx *types.Transaction) bool {
+	if tx == nil || tx.To() == nil || !isToSystemContract(*tx.To()) {
+		return false
+	}
+	// Canonical system txs are legacy (see getSystemMessage); typed envelopes
+	// carry fields the shape check does not bind, so never blind-sign them.
+	if tx.Type() != types.LegacyTxType {
+		return false
+	}
+	if tx.GasPrice() == nil || tx.EffectiveGasPriceForBSC().Sign() != 0 {
+		return false
+	}
+	v, r, s := tx.RawSignatureValues()
+	return isZeroSig(v, r, s)
+}
+
+// isSignableSystemTx reports whether tx can be bind-signed for BidBlock.
+func (p *Parlia) isSignableSystemTx(tx *types.Transaction) bool {
+	if !p.isUnsignedSystemTxCandidate(tx) {
+		return false
+	}
+	if *tx.To() != common.HexToAddress(systemcontracts.ValidatorContract) {
+		return false
+	}
+	return p.hasSignableSelector(tx.Data())
+}
+
+// expectedSystemTxShape returns the expected trailing system-tx order for accepted BidBlocks:
+//
+//	deposit -> distributeFinalityReward (cond.) -> updateValidatorSetV2 (cond.)
+//
+// Precondition: BidBlock admission has already enforced a non-zero deposit value.
+func (p *Parlia) expectedSystemTxShape(header, parent *types.Header) []expectedSystemTxEntry {
+	shape := make([]expectedSystemTxEntry, 0, 3)
+
+	shape = append(shape, expectedSystemTxEntry{
+		method:   "deposit",
+		selector: p.selectorFor("deposit"),
+	})
+
+	if header.Number.Uint64()%finalityRewardInterval == 0 {
+		shape = append(shape, expectedSystemTxEntry{
+			method:   "distributeFinalityReward",
+			selector: p.selectorFor("distributeFinalityReward"),
+		})
+	}
+
+	if isBreatheBlock(parent.Time, header.Time) {
+		shape = append(shape, expectedSystemTxEntry{
+			method:   "updateValidatorSetV2",
+			selector: p.selectorFor("updateValidatorSetV2"),
+		})
+	}
+
+	return shape
+}
+
+func (p *Parlia) verifySystemTxShape(txs []*types.Transaction, shape []expectedSystemTxEntry) error {
+	if len(txs) < len(shape) {
+		return fmt.Errorf("missing required system tx %q", shape[len(txs)].method)
+	}
+	if len(txs) > len(shape) {
+		return fmt.Errorf("unexpected extra system tx at position %d (selector 0x%x)",
+			len(shape), txSelector(txs[len(shape)]))
+	}
+	for i, exp := range shape {
+		if !bytes.HasPrefix(txs[i].Data(), exp.selector[:]) {
+			return fmt.Errorf("expected system tx %q at position %d, got selector 0x%x",
+				exp.method, i, txSelector(txs[i]))
+		}
+	}
+	return nil
+}
+
+// ExtractBidBlockDepositValue locates the trailing unsigned system-tx region and
+// returns its start index along with the value of the deposit tx (zero if absent).
+func (p *Parlia) ExtractBidBlockDepositValue(txs []*types.Transaction) (int, *big.Int) {
+	systemTxStart := len(txs)
+	for i := len(txs) - 1; i >= 0; i-- {
+		if !p.isUnsignedSystemTxCandidate(txs[i]) {
+			break
+		}
+		systemTxStart = i
+	}
+	// Deposit is the first trailing unsigned system tx (see expectedSystemTxShape).
+	// systemTxStart == 0 means there are no preceding user txs to collect fees from,
+	// which is invalid by design — return zero GasFee so admission rejects it.
+	if systemTxStart > 0 && systemTxStart < len(txs) {
+		depositSel := p.selectorFor("deposit")
+		if bytes.HasPrefix(txs[systemTxStart].Data(), depositSel[:]) {
+			return systemTxStart, new(big.Int).Set(txs[systemTxStart].Value())
+		}
+	}
+	return systemTxStart, new(big.Int)
+}
+
+// VerifyBidBlockSystemTxs validates the trailing unsigned system-tx region starting at systemTxStart.
+//
+//	Stage 1 — each trailing unsigned tx must be on the BEP-675 signable whitelist.
+//	Stage 2 — selectors & order must match expectedSystemTxShape for this header.
+func (p *Parlia) VerifyBidBlockSystemTxs(decoded *buildertypes.DecodedBidBlock, parent *types.Header, systemTxStart int) error {
+	for i := systemTxStart; i < len(decoded.Txs); i++ {
+		if !p.isSignableSystemTx(decoded.Txs[i]) {
+			toAddr := "<nil>"
+			if decoded.Txs[i].To() != nil {
+				toAddr = decoded.Txs[i].To().Hex()
+			}
+			return fmt.Errorf("unsigned system tx at position %d (to=%s) is not on the signable whitelist", i, toAddr)
+		}
+	}
+	shape := p.expectedSystemTxShape(decoded.Header, parent)
+	return p.verifySystemTxShape(decoded.Txs[systemTxStart:], shape)
+}
+
+func (p *Parlia) hasSignableSelector(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	selector := data[:4]
+	for _, methodSelector := range signableSystemTxSelectors {
+		if bytes.Equal(selector, methodSelector[:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Parlia) selectorFor(methodName string) [4]byte {
+	selector, ok := signableSystemTxSelectors[methodName]
+	if !ok {
+		panic(fmt.Sprintf("missing fixed system tx selector %s", methodName))
+	}
+	return selector
+}
+
+// ValidatorRole classifies an address within the working validator set.
+type ValidatorRole uint8
+
+const (
+	// ValidatorRoleNone means the address is not in the validator set.
+	ValidatorRoleNone ValidatorRole = iota
+	ValidatorRoleCabinet
+	ValidatorRoleCandidate
+)
+
+func (r ValidatorRole) String() string {
+	switch r {
+	case ValidatorRoleCabinet:
+		return "cabinet"
+	case ValidatorRoleCandidate:
+		return "candidate"
+	default:
+		return "none"
+	}
+}
+
+// initNumOfCabinets mirrors BSCValidatorSet.INIT_NUM_OF_CABINETS, its fallback
+// while numOfCabinets is unset.
+const initNumOfCabinets = 21
+
+// SealerRole classifies addr against the validator set at blockHash and returns
+// the cabinet and full validator-set sizes used for majority thresholds.
+func (p *Parlia) SealerRole(blockHash common.Hash, addr common.Address) (ValidatorRole, int, int, error) {
+	var validators []common.Address
+	if err := p.callValidatorSet(blockHash, "getValidators", &validators); err != nil {
+		return ValidatorRoleNone, 0, 0, fmt.Errorf("getValidators: %w", err)
+	}
+	idx := slices.Index(validators, addr)
+	if idx < 0 {
+		return ValidatorRoleNone, 0, 0, nil
+	}
+
+	var numOfCabinets *big.Int
+	if err := p.callValidatorSet(blockHash, "numOfCabinets", &numOfCabinets); err != nil {
+		return ValidatorRoleNone, 0, 0, fmt.Errorf("numOfCabinets: %w", err)
+	}
+	cabinets := initNumOfCabinets
+	if numOfCabinets != nil && numOfCabinets.IsInt64() && numOfCabinets.Sign() > 0 {
+		cabinets = int(numOfCabinets.Int64())
+	}
+	cabinets = min(cabinets, len(validators))
+	if idx < cabinets {
+		return ValidatorRoleCabinet, cabinets, len(validators), nil
+	}
+	return ValidatorRoleCandidate, cabinets, len(validators), nil
+}
+
+// callValidatorSet performs a no-argument view call on the validator contract.
+func (p *Parlia) callValidatorSet(blockHash common.Hash, method string, out interface{}) error {
+	data, err := p.validatorSetABI.Pack(method)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	blockNr := rpc.BlockNumberOrHashWithHash(blockHash, false)
+	msgData := (hexutil.Bytes)(data)
+	toAddress := common.HexToAddress(systemcontracts.ValidatorContract)
+	gas := (hexutil.Uint64)(uint64(math.MaxUint64 / 2))
+	result, err := p.ethAPI.Call(ctx, ethapi.TransactionArgs{
+		Gas:  &gas,
+		To:   &toAddress,
+		Data: &msgData,
+	}, &blockNr, nil, nil)
+	if err != nil {
+		return err
+	}
+	return unpackValidatorSet(p.validatorSetABI, method, result, out)
+}
+
+// unpackValidatorSet decodes a single-output validator-contract return value.
+func unpackValidatorSet(contractABI abi.ABI, method string, result []byte, out interface{}) error {
+	return contractABI.UnpackIntoInterface(out, method, result)
+}
+
+func (p *Parlia) BlockTimeUpperCheck(chain consensus.ChainHeaderReader, header *types.Header) error {
+	number := header.Number.Uint64()
+	snap, err := p.snapshot(chain, number-1, header.ParentHash, nil)
+	if err != nil {
+		return err
+	}
+
+	parent := chain.GetHeader(header.ParentHash, number-1)
+	if parent == nil {
+		return consensus.ErrUnknownAncestor
+	}
+
+	maxAllowed := p.blockTimeForRamanujanFork(snap, header, parent)
+	if header.MilliTimestamp() > maxAllowed {
+		return fmt.Errorf("BidBlock time too far in future: headerTime=%d, maxAllowed=%d",
+			header.MilliTimestamp(), maxAllowed)
+	}
+	return nil
+}
+
+func txSelector(tx *types.Transaction) []byte {
+	data := tx.Data()
+	if len(data) < 4 {
+		return data
+	}
+	return data[:4]
+}
+
+func isZeroSig(v, r, s *big.Int) bool {
+	isZero := func(x *big.Int) bool { return x == nil || x.Sign() == 0 }
+	return isZero(v) && isZero(r) && isZero(s)
+}

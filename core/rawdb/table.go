@@ -101,10 +101,6 @@ func (t *table) ResetTable(kind string, startAt uint64, onlyEmpty bool) error {
 	return t.db.ResetTable(kind, startAt, onlyEmpty)
 }
 
-func (t *table) ResetTableForIncr(kind string, startAt uint64, onlyEmpty bool) error {
-	return t.db.ResetTableForIncr(kind, startAt, onlyEmpty)
-}
-
 func (t *table) ReadAncients(fn func(reader ethdb.AncientReaderOp) error) (err error) {
 	return t.db.ReadAncients(fn)
 }
@@ -220,32 +216,12 @@ func (t *table) NewBatch() ethdb.Batch {
 	return &tableBatch{t.db.NewBatch(), t.prefix}
 }
 
-func (t *table) SetStateStore(state ethdb.Database) {
-	panic("not implement")
-}
-
-func (t *table) GetStateStore() ethdb.Database {
-	return nil
-}
-
-func (t *table) HasSeparateStateStore() bool {
-	return false
-}
-
-func (t *table) StateStoreReader() ethdb.Reader {
-	return nil
-}
-
 // NewBatchWithSize creates a write-only database batch with pre-allocated buffer.
 func (t *table) NewBatchWithSize(size int) ethdb.Batch {
 	return &tableBatch{t.db.NewBatchWithSize(size), t.prefix}
 }
 
 func (t *table) SetupFreezerEnv(env *ethdb.FreezerEnv, blockHistory uint64) error {
-	return nil
-}
-
-func (t *table) CleanBlock(kvStore ethdb.KeyValueStore, start uint64) error {
 	return nil
 }
 
@@ -289,6 +265,11 @@ func (b *tableBatch) Write() error {
 // Reset resets the batch for reuse.
 func (b *tableBatch) Reset() {
 	b.batch.Reset()
+}
+
+// Close closes the batch and releases all associated resources.
+func (b *tableBatch) Close() {
+	b.batch.Close()
 }
 
 // tableReplayer is a wrapper around a batch replayer which truncates

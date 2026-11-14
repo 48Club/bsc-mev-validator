@@ -1,4 +1,260 @@
 # Changelog
+
+## v1.8.2
+
+v1.8.2 schedules the BSC Mainnet [Jenner hardfork](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-718.md) for **2026-12-08 02:30:00 UTC** (`1796697000`). All mainnet node operators must upgrade before activation.
+
+### Key Changes (Hard Fork Required)
+
+- [BEP-702: Compliant Asset Standard](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-702.md): adds CAS20 stateful precompiles. Token creation requires separate activation by a governance-appointed administrator.
+- [BEP-703: Payment Lane](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-703.md): reserves 5% of block gas by default for eligible BNB transfers and transactions to listed payment contracts. The ratio and contract list can be changed through governance.
+- [BEP-706: Millisecond Timestamp](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-706.md): exposes millisecond block time through precompile `0x70`; `block.timestamp` remains in seconds.
+
+### BEP-675 MEV Enhancements (No Hard Fork Required)
+
+This release also includes the MEV enhancements introduced in v1.8.1:
+
+- **Faster BidBlock transport:** gRPC with RLP-encoded binary payloads reduces JSON parsing and hex-conversion overhead. JSON-RPC remains supported. See the [gRPC integration guide](https://github.com/bnb-chain/bsc/blob/v1.8.1/core/types/builder/bep-675-builder-grpc-integration.md).
+- **Stronger validation and builder revocation:** rejects zero-state-root BidBlocks, revokes local `SendBidBlock` access on cross-validator bad-block evidence, and persists revocations across restarts.
+- **Better observability:** adds bad BidBlock and builder revocation metrics.
+
+## MetaInfo
+
+Mandatory Update Required: Yes
+
+Target Audience: all BSC Mainnet node operators, MEV builders and sentry operators
+
+Procedure: replace the binary and restart before activation. If upgrading from v1.7.x or v1.8.0-alpha, first review the [v1.8.0-alpha](https://github.com/bnb-chain/bsc/releases/tag/v1.8.0-alpha) and [v1.8.1](https://github.com/bnb-chain/bsc/releases/tag/v1.8.1) upgrade notes for removed configuration fields, RPC changes and MEV gRPC settings. These non-consensus changes can take effect before the hard fork.
+
+Schedule(Timeline): BSC Mainnet - 2026-12-08 02:30:00 UTC (`1796697000`).
+
+## v1.8.1
+
+v1.8.1 is for BSC Chapel testnet [Jenner hardfork](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-718.md), scheduled for 2026-10-29 02:30:00 AM UTC.
+
+### FEATURE
+
+- [core/vm, params: implement CAS20 Compliant Asset Standard (BEP-702)](https://github.com/bnb-chain/bsc/pull/3813)
+- [core/paymentlane: implement BEP-703 payment lane](https://github.com/bnb-chain/bsc/pull/3793)
+- [core, params: implement BEP-706 millisecond timestamp precompile](https://github.com/bnb-chain/bsc/pull/3792)
+
+### BEP-675 Enhancements
+
+- [internal/ethapi: support gRPC SendBidBlock API (BEP-675)](https://github.com/bnb-chain/bsc/pull/3774)
+- [miner: persist BidBlock revocations across restarts](https://github.com/bnb-chain/bsc/pull/3796)
+- [miner: reject BidBlock with zero state root](https://github.com/bnb-chain/bsc/pull/3798)
+- [core: report and count bad BidBlocks](https://github.com/bnb-chain/bsc/pull/3804)
+- [miner: revoke builders on cross-validator bad-block evidence](https://github.com/bnb-chain/bsc/pull/3806)
+- [miner: record revocation counts and add gRPC disable flag](https://github.com/bnb-chain/bsc/pull/3810)
+
+### BUGFIX
+
+- [core/vm: charge the double-sign-evidence precompile (`0x68`) per input byte at Jenner](https://github.com/bnb-chain/bsc/pull/3772)
+- [eth: fix peerSet lock deadlock in waitSnapExtension](https://github.com/bnb-chain/bsc/pull/3776)
+- [eth: cap NewBlockHashesPacket length](https://github.com/bnb-chain/bsc/pull/3777)
+- [internal/ethapi: fix getDiffAccounts missing state changes](https://github.com/bnb-chain/bsc/pull/3802)
+- [consensus/parlia: reject BlockAccessListHash and SlotNumber before Amsterdam](https://github.com/bnb-chain/bsc/pull/3808)
+- [core, internal, miner: fix RPC timestamp overrides, gas estimation and mining edge cases](https://github.com/bnb-chain/bsc/pull/3821)
+- [miner/minerconfig: fix the default MEV gRPC port](https://github.com/bnb-chain/bsc/pull/3824)
+- [eth/protocols/eth, eth/downloader: fix partial receipt delivery deadlock](https://github.com/bnb-chain/bsc/pull/3825)
+- [core/vm: fix CAS20 creation log order and bootstrap caller context](https://github.com/bnb-chain/bsc/pull/3826)
+- [params: fix eth_config blob schedule inheritance](https://github.com/bnb-chain/bsc/pull/3833)
+- [eth: avoid blocking BSC extension delivery during shutdown](https://github.com/bnb-chain/bsc/pull/3834)
+- [eth/protocols/eth: fix an eth/68 receipt response edge case](https://github.com/bnb-chain/bsc/pull/3835)
+- [core, core/state: fix storage and block import metrics](https://github.com/bnb-chain/bsc/pull/3838)
+- [eth: fix per-IP peer accounting](https://github.com/bnb-chain/bsc/pull/3839)
+
+### IMPROVEMENT
+
+- [consensus/parlia: add metrics for vote attestation assembly outcomes](https://github.com/bnb-chain/bsc/pull/3782)
+- [eth/protocols/bsc: rate-limit GetBlocksByRange serving per peer](https://github.com/bnb-chain/bsc/pull/3794)
+- [miner, core/types: expose DelayLeftOver in MevParams](https://github.com/bnb-chain/bsc/pull/3807)
+- [core/types/builder: document gRPC BidBlock integration](https://github.com/bnb-chain/bsc/pull/3820)
+- [core/vm: rename CAS20 seizure exemption policy](https://github.com/bnb-chain/bsc/pull/3829)
+- [eth/fetcher: relax transaction-fetch stall threshold for BSC](https://github.com/bnb-chain/bsc/pull/3837)
+- [core/vote: lower dropped-vote logging to debug](https://github.com/bnb-chain/bsc/pull/3844)
+
+## MetaInfo
+
+Mandatory Update Required: Yes
+
+Target Audience: all BSC Chapel testnet node operators, MEV builders and sentry operators
+
+Key Changes:
+
+- [BEP-702: Compliant Asset Standard](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-702.md): introduces CAS20, a native token standard for stablecoins and tokenized assets, implemented as stateful precompiles. Compliance controls include shared allow/blocklists, transfer policies, pausing, and separate mint, burn and seizure roles. Token creation requires separate activation by a governance-appointed administrator.
+- [BEP-703: Payment Lane](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-703.md): reserves 5% of block gas by default for eligible BNB transfers and transactions to listed payment contracts, keeping capacity available for payments during congestion. The ratio and contract list can be changed through governance.
+- [BEP-706: Millisecond Timestamp](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-706.md): exposes millisecond block time to smart contracts through precompile `0x70`, supporting applications that need sub-second timing. `block.timestamp` remains in seconds.
+- [BEP-675 Enhancements](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-675.md) (no hard fork required): **faster BidBlock encoding/decoding over gRPC**. RLP-encoded binary payloads avoid JSON parsing and hex conversion, reducing serialization overhead and payload size for large blocks and blob sidecars. **Validation and builder revocation improvements** include rejecting BidBlocks with a zero state root, revoking local `SendBidBlock` access on cross-validator bad-block evidence, persisting revocations across restarts, and adding bad BidBlock and revocation metrics.
+
+Procedure: when upgrading from v1.8.0, check the gRPC and RPC changes below, then replace the binary and restart before the hard fork.
+
+- **MEV gRPC:** enabled by default when MEV and BidBlock submission are enabled. It uses the HTTP bind address and defaults to port `8552`. Ensure the port is available; if using gRPC, confirm sentry connectivity. Set `[Eth.Miner.Mev] GRPCPort` to change the port, or `--mev.grpc.disable` to disable the service. JSON-RPC remains supported. See the [gRPC integration guide](core/types/builder/bep-675-builder-grpc-integration.md).
+- **BEP-706 RPC change:** in `eth_call`, `eth_estimateGas`, `debug_traceCall` and `eth_simulateV1`, `blockOverrides.prevRandao`, when supplied, must encode a millisecond remainder (`0–999`) as a 32-byte hex value. This check applies immediately after upgrading, even before Jenner activates. `time` remains in seconds; overriding only `time` resets the millisecond remainder to zero.
+
+Schedule(Timeline): BSC Chapel testnet — 2026-10-29 02:30:00 AM UTC (`1793241000`). Mainnet activation is not scheduled in this release.
+
+## v1.8.0-alpha
+v1.8.0-alpha is a preview release for upstream code sync, it catches up with [go-ethereum release [v1.17.3]](https://github.com/ethereum/go-ethereum/releases/tag/v1.17.3) and also removes several BSC features and fixes bugs.
+
+### Feature Removal
+- [core/vm: revert opcode-level optimization and fold EVMInterpreter into EVM](https://github.com/bnb-chain/bsc/pull/3759)
+The EVM opcode-level optimization (superinstruction) feature added in [#3395](https://github.com/bnb-chain/bsc/pull/3395) is removed entirely: the superinstruction interpreter, the fused opcodes and their jump-table entries are gone, and `EVMInterpreter` is folded back into `EVM`.
+- [core, triedb, ethdb: remove incremental snapshot (incr db) feature](https://github.com/bnb-chain/bsc/pull/3768)
+The incr downloader and merger, the incr freezers and the pathdb incr manager are all deleted.
+- [core/txpool, eth: remove local transaction reannounce mechanism](https://github.com/bnb-chain/bsc/pull/3756)
+Local pending transactions are no longer periodically re-announced.
+- [p2p: remove BSC table-layer ENR node filtering and dead bootnode bucket-size code](https://github.com/bnb-chain/bsc/pull/3735)
+The discovery table no longer filters nodes by ENR.
+
+### Code Sync
+- [upstream: merge geth-v1.16.9 ~ geth-v1.17.3](https://github.com/bnb-chain/bsc/pull/3760)
+Key changes from the code sync include:
+- Wire protocol: eth/70 becomes the primary protocol. BSC keeps eth/68 for peer compatibility, retains TD in `StatusPacket`, and sends no `UpgradeStatusMsg` on eth/70. snap/2 groundwork landed, but only snap/1 is advertised.
+- State: Verkle is replaced by the unified binary trie (UBT), with state readers split into MPT/UBT databases.
+- PathDB: path-based archive with proofs, history index pruner, trienode history on existing nodes.
+- EIP-7928 block access list scaffolding replaces BEP-592.
+- The Amsterdam EIP set landed but stays dormant on BSC: EIP-7778, EIP-7843, EIP-8024, EIP-7708, EIP-7954, EIP-7976/7981, EIP-8037, EIP-7610.
+
+### RPC Changes
+- **Breaking** `debug_trace*` structLog output follows the client-wide spec: `memory` words are `0x`-prefixed and padded to 32 bytes, `storage` keys and values are `0x`-prefixed, and `error` is omitted when empty.
+- **Breaking** `reexec` is no longer accepted in the tracing config.
+- `eth_getLogs` / `eth_getFilterLogs`: `--rpc.rangelimit` (default 5000) replaces the fixed cap toggled by `--rangelimit`, and exceeding it returns `-32602 invalid params`.
+- `eth_simulateV1`: every call result gains a `maxUsedGas` field.
+- New method `eth_getStorageValues`, which reads up to 1024 storage slots in one call.
+
+### Config Changes
+- Default `--cache` is raised from 1024 to 4096 MB, so nodes that do not set it explicitly will use about 3GB more memory.
+- Renamed: `--rangelimit` to `--rpc.rangelimit`, `--override.verkle` to `--override.ubt`.
+- New: `--history.trienode` (serve historical state proofs, disabled by default), `--miner.maxblobs`, `--debug.logslowblock`, and the opt-in `--rpc.telemetry` family.
+- Removed: the seven `--incr.*` flags plus the `inspect-incr-snapshot` and `merge-incr-snapshot` subcommands, `--txpool.reannouncetime`, and bootnode `-network`.
+- Accepted but inert, warning only: `--enable-bal`, `--rangelimit`, `--vm.opcode.optimize`.
+- `config.toml`: `[Eth] EnableOpcodeOptimizing`, `[Eth.TxPool] ReannounceTime` and `[Node.P2P] EnableENRFilter` are no longer supported.
+
+### BUGFIX
+- [core, eth, consensus, miner, tests: stabilize the v1.17.3 merge](https://github.com/bnb-chain/bsc/pull/3757)
+- [internal/ethapi, eth/filters: fix eth_simulateV1 multi-block and getLogs latest range-limit regressions](https://github.com/bnb-chain/bsc/pull/3783)
+- [miner, core/vm: fix MEV bid gas accounting and EVM stack-arena double-release](https://github.com/bnb-chain/bsc/pull/3761)
+- [core/txpool: fall back to an empty state when head state is unavailable](https://github.com/bnb-chain/bsc/pull/3765)
+- [eth/downloader: fix legacy snap sync regressions from the v1.17.3 merge](https://github.com/bnb-chain/bsc/pull/3766)
+- [miner, core: fix mining prefetch rate-limiting broken by shadowing](https://github.com/bnb-chain/bsc/pull/3755)
+- [miner: make MEV bid per-builder quota admission atomic](https://github.com/bnb-chain/bsc/pull/3733)
+- [consensus/parlia: only blind-sign legacy system txs](https://github.com/bnb-chain/bsc/pull/3773)
+
+### Others
+- [core/filtermaps: update BSC mainnet and chapel log index checkpoints](https://github.com/bnb-chain/bsc/pull/3784)
+- [cmd/faucet: add United Stables ($U) testnet token](https://github.com/bnb-chain/bsc/pull/3738)
+
+## MetaInfo
+Mandatory Update Required: No
+Target Audience: developers and testnet operators, this is a preview release and is not intended for production
+Procedure: simply binary replacement should be good
+Schedule(Timeline): no scheduled upgrade timeline
+
+## v1.7.8
+v1.7.8 is a maintenance release.
+
+## MetaInfo
+Mandatory Update Required: No
+Target Audience: all BSC Mainnet/Testnet users
+Procedure: simply binary replacement should be good
+Schedule(Timeline): no scheduled upgrade timeline
+
+## v1.7.7
+v1.7.7 is for BSC Mainnet [Pasteur hardfork](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-673.md),the hard fork time is 2026-08-25 02:30:00 AM UTC
+
+## v1.7.6
+v1.7.6 is for BSC Chapel testnet [Pasteur hardfork](https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP-673.md),the hard fork time is 2026-07-21 02:30:00 AM UTC
+
+### Pasteur Hardfork
+- [\#3623](https://github.com/bnb-chain/bsc/pull/3623) core/vm: reject duplicate bridge validators at Pasteur
+- [\#3691](https://github.com/bnb-chain/bsc/pull/3691) miner: support builder-proposed block with validator blind signing
+- [\#3717](https://github.com/bnb-chain/bsc/pull/3717) params: move Pasteur next to Mendel
+- [\#3721](https://github.com/bnb-chain/bsc/pull/3721) core/systemcontracts: introduce Pasteur hardfork system-contract upgrade
+- [\#3727](https://github.com/bnb-chain/bsc/pull/3727) core/systemcontracts: point Pasteur CommitUrl to genesis-contract v1.2.6
+- [\#3741](https://github.com/bnb-chain/bsc/pull/3741) miner: disable BidBlock on hard-fork activation blocks
+- [\#3742](https://github.com/bnb-chain/bsc/pull/3742) miner: optimize BidBlock signing hash
+
+### BUGFIX
+- [\#3668](https://github.com/bnb-chain/bsc/pull/3668) eth/handler.go: add verify bal
+- [\#3671](https://github.com/bnb-chain/bsc/pull/3671) eth/protocols/bsc: cap GetBlocksByRange response size
+- [\#3672](https://github.com/bnb-chain/bsc/pull/3672) eth/protocols/bsc: rate-limit incoming votes by vote count
+- [\#3680](https://github.com/bnb-chain/bsc/pull/3680) internal/ethapi: limit number of getProofs keys
+- [\#3681](https://github.com/bnb-chain/bsc/pull/3681) internal/ethapi: limit number of calls to eth_simulateV1
+- [\#3682](https://github.com/bnb-chain/bsc/pull/3682) internal/ethapi: fix gas cap for eth_simulateV1
+- [\#3683](https://github.com/bnb-chain/bsc/pull/3683) core: fix txLookupLock mutex leak on error returns in reorg()
+- [\#3684](https://github.com/bnb-chain/bsc/pull/3684) cmd, core, eth, tests: prevent state flushing in RPC
+- [\#3685](https://github.com/bnb-chain/bsc/pull/3685) core/tracing: fix nonce revert edge case
+- [\#3686](https://github.com/bnb-chain/bsc/pull/3686) eth/filters: fix race in pending tx and new heads subscriptions
+- [\#3687](https://github.com/bnb-chain/bsc/pull/3687) core, internal/ethapi: fix incorrect max-initcode RPC error mapping
+- [\#3688](https://github.com/bnb-chain/bsc/pull/3688) eth/filters: rangeLogs should error on invalid block range
+- [\#3689](https://github.com/bnb-chain/bsc/pull/3689) eth/filters: fix race in NewVotes and NewFinalizedHeaders
+- [\#3692](https://github.com/bnb-chain/bsc/pull/3692) eth/filters: fix source leak when New Filters
+- [\#3700](https://github.com/bnb-chain/bsc/pull/3700) crypto: add hash length check in nocgo VerifySignature
+- [\#3701](https://github.com/bnb-chain/bsc/pull/3701) p2p/discover: copy buffer before sending read errors to unhandled
+- [\#3702](https://github.com/bnb-chain/bsc/pull/3702) p2p/discover: fix timeout loop early exit when removing expired matchers
+- [\#3703](https://github.com/bnb-chain/bsc/pull/3703) eth/tracers/logger: fix exclude address list
+- [\#3705](https://github.com/bnb-chain/bsc/pull/3705) eth/protocols/eth: stop serving on unavailable responses
+- [\#3706](https://github.com/bnb-chain/bsc/pull/3706) triedb/pathdb: fix lookup sentinel collision with zero disk layer root
+- [\#3707](https://github.com/bnb-chain/bsc/pull/3707) eth/tracers: forward OnSystemCall hooks through mux
+- [\#3708](https://github.com/bnb-chain/bsc/pull/3708) eth/downloader: drop invalid peers + fix deliver index
+- [\#3709](https://github.com/bnb-chain/bsc/pull/3709) core/state: fix StateDB Reader error discarded after Commit
+- [\#3710](https://github.com/bnb-chain/bsc/pull/3710) p2p/discover: decouple nodeFeed from Table mutex in waitForNodes
+- [\#3711](https://github.com/bnb-chain/bsc/pull/3711) core/rawdb: fix file descriptor leak in freezer error paths
+- [\#3712](https://github.com/bnb-chain/bsc/pull/3712) core/rawdb: fsync temp file before rename in copyFrom
+- [\#3718](https://github.com/bnb-chain/bsc/pull/3718) fix: nocgo sigToPub hash check + pathdb zero-base regression test
+
+### IMPROVEMENT
+- [\#3669](https://github.com/bnb-chain/bsc/pull/3669) miner: reduce local mining time for last block in one turn
+- [\#3694](https://github.com/bnb-chain/bsc/pull/3694) consensus/parlia: extract VerifyUnsealedHeader from verifyHeader
+- [\#3736](https://github.com/bnb-chain/bsc/pull/3736) miner: add BidBlock verify metrics
+
+### CLEAN UP
+- [\#3670](https://github.com/bnb-chain/bsc/pull/3670) triedb/pathdb: remove legacy field JournalFilePath
+- [\#3678](https://github.com/bnb-chain/bsc/pull/3678) miner: remove optional transaction gas limit cap
+- [\#3690](https://github.com/bnb-chain/bsc/pull/3690) all: remove BEP-592 non-consensus block access list
+- [\#3716](https://github.com/bnb-chain/bsc/pull/3716) ethdb,trie: remove multidb code from bsc
+- [\#3720](https://github.com/bnb-chain/bsc/pull/3720) core/rawdb: cleanup bep-592 bal key related
+- [\#3722](https://github.com/bnb-chain/bsc/pull/3722) core/txpool/legacypool: remove overflowpool for txs
+- [\#3728](https://github.com/bnb-chain/bsc/pull/3728) beacon, cmd: remove fake-beacon op-stack shim (revert #2678)
+- [\#3739](https://github.com/bnb-chain/bsc/pull/3739) core/types: extract bid and block mev info into builder subpackage
+
+#### Deprecated Flags & Config Fields
+The following flags and config fields are removed or deprecated in this release. Please update your node configuration accordingly before upgrading:
+
+**CLI Flags**
+
+| Flag | Change | Note |
+|---|---|---|
+| `--journalfile` | Deprecated (no effect) | Remove from your startup script ([#3670](https://github.com/bnb-chain/bsc/pull/3670)) |
+| `--miner.txgaslimit` | Deprecated (no effect) | Per-transaction gas limit is now enforced by EIP-7825 ([#3678](https://github.com/bnb-chain/bsc/pull/3678)) |
+| `--enablebal` | Deprecated (no effect) | BEP-592 block access list has been removed ([#3690](https://github.com/bnb-chain/bsc/pull/3690)) |
+| `--multidatabase` | Removed | Multi-database support is fully removed ([#3716](https://github.com/bnb-chain/bsc/pull/3716)) |
+| `--txpool.overflowpoolslots` | Deprecated (no effect) | Overflow pool has been removed ([#3722](https://github.com/bnb-chain/bsc/pull/3722)) |
+| `--fake-beacon` | Removed | fake-beacon op-stack shim removed ([#3728](https://github.com/bnb-chain/bsc/pull/3728)) |
+| `--fake-beacon.addr` | Removed | See `--fake-beacon` ([#3728](https://github.com/bnb-chain/bsc/pull/3728)) |
+| `--fake-beacon.port` | Removed | See `--fake-beacon` ([#3728](https://github.com/bnb-chain/bsc/pull/3728)) |
+
+**Config File (TOML) Fields**
+
+| Field | Change | Note |
+|---|---|---|
+| `[Eth] EnableBAL` | **Removed** — causes load error if present | Remove this field from your config.toml before upgrading ([#3690](https://github.com/bnb-chain/bsc/pull/3690)) |
+| `[TxPool] OverflowPoolSlots` | Deprecated — silently ignored | Safe to leave but recommend removing ([#3722](https://github.com/bnb-chain/bsc/pull/3722)) |
+  
+## MetaInfo
+Mandatory Update Required: Yes
+Target Audience: all BSC Testnet users
+Procedure: before upgrading, review the deprecated flags and config fields listed above and confirm their removal has no impact on your node; once confirmed, binary replacement is sufficient:
+  - `--journalfile`: no longer has any effect, safe to remove
+  - `--miner.txgaslimit`: per-transaction gas limit is now enforced by EIP-7825; confirm EIP-7825 behaviour meets your requirements before removing
+  - `--enablebal`: no longer has any effect, safe to remove
+  - `--multidatabase`: single-database mode is now the only option; confirm your data directory is compatible
+  - `--txpool.overflowpoolslots`: overflow pool is removed; review your txpool capacity settings if you relied on it
+  - `[Eth] EnableBAL` in config.toml: **must be removed before upgrading** — will cause a startup error if left in
+  - `[TxPool] OverflowPoolSlots` in config.toml: silently ignored, but recommend removing to keep config clean
+Schedule(Timeline): TBD
+
 ## v1.7.5
 v1.7.5 is a maintenance release.
 

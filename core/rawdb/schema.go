@@ -112,6 +112,7 @@ var (
 
 	blockBodyPrefix     = []byte("b") // blockBodyPrefix + num (uint64 big endian) + hash -> block body
 	blockReceiptsPrefix = []byte("r") // blockReceiptsPrefix + num (uint64 big endian) + hash -> block receipts
+	accessListPrefix    = []byte("j") // accessListPrefix + num (uint64 big endian) + hash -> block access list
 
 	txLookupPrefix        = []byte("l") // txLookupPrefix + hash -> transaction/receipt lookup metadata
 	bloomBitsPrefix       = []byte("B") // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
@@ -148,8 +149,6 @@ var (
 	ParliaSnapshotPrefix = []byte("parlia-")
 
 	BlockBlobSidecarsPrefix = []byte("blobs")
-
-	BlockBALPrefix = []byte("bal") // blockBALPrefix + blockNumber (uint64 big endian) + blockHash -> block access list
 
 	// new log index
 	filterMapsPrefix         = "fm-"
@@ -224,9 +223,9 @@ func blockBlobSidecarsKey(number uint64, hash common.Hash) []byte {
 	return append(append(BlockBlobSidecarsPrefix, encodeBlockNumber(number)...), hash.Bytes()...)
 }
 
-// blockBALKey = blockBALPrefix + blockNumber (uint64 big endian) + blockHash
-func blockBALKey(number uint64, hash common.Hash) []byte {
-	return append(append(BlockBALPrefix, encodeBlockNumber(number)...), hash.Bytes()...)
+// accessListKey = accessListPrefix + num (uint64 big endian) + hash
+func accessListKey(number uint64, hash common.Hash) []byte {
+	return append(append(accessListPrefix, encodeBlockNumber(number)...), hash.Bytes()...)
 }
 
 // txLookupKey = txLookupPrefix + hash

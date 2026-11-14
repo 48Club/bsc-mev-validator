@@ -1,0 +1,420 @@
+// Copyright 2026 The go-ethereum Authors
+// This file is part of the go-ethereum library.
+//
+// BidBlock worker helpers for BEP-675.
+
+package miner
+
+import (
+	"errors"
+	"fmt"
+	"math/big"
+	"sync"
+	"time"
+
+	"github.com/holiman/uint256"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/consensus/parlia"
+	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/paymentlane"
+	"github.com/ethereum/go-ethereum/core/txpool"
+	"github.com/ethereum/go-ethereum/core/types"
+	buildertypes "github.com/ethereum/go-ethereum/core/types/builder"
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/trie"
+)
+
+type bidBlockTaskInfo struct {
+	builder       common.Address
+	bidHash       common.Hash
+	gasFee        *big.Int
+	systemTxStart int
+
+	nontaxableFee *uint256.Int
+}
+
+var errInvalidBidBlockBlobTx = errors.New("BidBlock blob validation failed")
+
+// setBidMevInfo tags header.RequestsHash with the BEP-675 block-source info
+func setBidMevInfo(header *types.Header, builder common.Address, isBidBlock bool) {
+	// Legacy BID: a nil RequestsHash denotes a pre-Prague block that must stay
+	// untagged. BIDBLOCK is post-Prague and validator-owned, so always stamped.
+	if !isBidBlock && header.RequestsHash == nil {
+		return
+	}
+	version := buildertypes.BlockMevInfoVersionBid
+	if isBidBlock {
+		version = buildertypes.BlockMevInfoVersionBidBlock
+	}
+	tag := buildertypes.EncodeBlockMevInfo(version, builder)
+	header.RequestsHash = &tag
+}
+
+func (w *worker) selectBidBlock(bidBlock *buildertypes.DecodedBidBlock, simBidReward, localReward *big.Int) bool {
+	if bidBlock == nil {
+		return false
+	}
+
+	bidBlockReward := totalBidReward(bidBlock.GasFee, bidBlock.BidPriorityFee)
+	if !rewardStrictlyBetter(bidBlockReward, simBidReward) {
+		return false
+	}
+	if !rewardStrictlyBetter(bidBlockReward, localReward) {
+		return false
+	}
+
+	simReward := "<none>"
+	if simBidReward != nil {
+		simReward = simBidReward.String()
+	}
+	blockNum := bidBlock.Header.Number.Uint64()
+	// TODO: switch back to Debug after BidBlock rollout stabilizes.
+	log.Info("BidSimulator: BidBlock win bid, compare with local",
+		"block", blockNum,
+		"bidHash", bidBlock.Hash(),
+		"localReward", localReward,
+		"bidReward", bidBlockReward,
+		"simBidReward", simReward)
+
+	log.Info("[BID BLOCK selected]",
+		"block", blockNum,
+		"bidHash", bidBlock.Hash(),
+		"builder", bidBlock.Builder,
+		"gasFee", weiToEtherStringF6(bidBlock.GasFee),
+		"nontaxable", weiToEtherStringF6(bidBlock.BidPriorityFee.ToBig()),
+		"reward", weiToEtherStringF6(bidBlockReward),
+		"txs", len(bidBlock.Txs))
+	return true
+}
+
+// bindSignBidBlockSystemTxs signs the verified unsigned system txs from a BidBlock in place.
+func bindSignBidBlockSystemTxs(
+	systemTxs []*types.Transaction,
+	chainID *big.Int,
+	p *parlia.Parlia,
+) error {
+	for i, tx := range systemTxs {
+		signed, err := p.SignSystemTx(tx, chainID)
+		if err != nil {
+			return fmt.Errorf("failed to sign system tx %d: %v", i, err)
+		}
+		systemTxs[i] = signed
+	}
+	return nil
+}
+
+// prepareBidBlockTask signs system txs and assembles a BidBlock task.
+// Extra was finalized by the validator during admission (SendBidBlock calls
+// SetExtraData before preSealVerifyBidBlock); engine.Seal will later fill the
+// reserved vote-attestation/seal-signature bytes. Here we only recompute TxHash
+// after bind-signing the trailing system txs. Do not touch fields that enter
+// the EVM BlockContext (GasLimit, Coinbase, Time, Difficulty, BaseFee, ...) —
+// changing them after the builder's pre-execution would diverge the re-executed
+// stateRoot and fail InsertChain.
+func (w *worker) prepareBidBlockTask(
+	decoded *buildertypes.DecodedBidBlock,
+	start time.Time,
+) (*task, error) {
+	prepareStart := time.Now()
+	defer bidBlockPrepareTimer.UpdateSince(prepareStart)
+
+	if !w.isRunning() {
+		return nil, errors.New("worker is not running")
+	}
+
+	p := w.engine.(*parlia.Parlia)
+
+	// Copy the tx slice so bind-signing does not mutate the cached BidBlock.
+	allTxs := make([]*types.Transaction, len(decoded.Txs))
+	copy(allTxs, decoded.Txs)
+
+	header := types.CopyHeader(decoded.Header)
+	if err := validateBidBlockBlobTxs(header, allTxs, decoded.Sidecars, decoded.SystemTxStart); err != nil {
+		if errors.Is(err, errInvalidBidBlockBlobTx) {
+			w.revokeBidBlockBuilder(decoded.Builder, err.Error(), decoded.Hash(), decoded.BlockNumber())
+		}
+		return nil, err
+	}
+	if err := bindSignBidBlockSystemTxs(allTxs[decoded.SystemTxStart:], w.chainConfig.ChainID, p); err != nil {
+		return nil, err
+	}
+	header.TxHash = types.DeriveSha(types.Transactions(allTxs), trie.NewStackTrie(nil))
+
+	body := &types.Body{
+		Transactions: allTxs,
+		Withdrawals:  make([]*types.Withdrawal, 0),
+	}
+	block := types.NewBlockWithHeader(header).WithBody(*body).WithSidecars(decoded.Sidecars)
+
+	return &task{
+		block: block,
+		bidBlockInfo: &bidBlockTaskInfo{
+			builder:       decoded.Builder,
+			bidHash:       decoded.Hash(),
+			gasFee:        decoded.GasFee,
+			nontaxableFee: decoded.BidPriorityFee,
+			systemTxStart: decoded.SystemTxStart,
+		},
+		createdAt:     time.Now(),
+		miningStartAt: start,
+	}, nil
+}
+
+type bidBlockBlobValidationJob struct {
+	txIndex int
+	tx      *types.Transaction
+}
+
+// validateBidBlockBlobTxs runs expensive blob proof checks for the selected BidBlock.
+func validateBidBlockBlobTxs(header *types.Header, txs []*types.Transaction, sidecars types.BlobSidecars, systemTxStart int) error {
+	jobs := make([]bidBlockBlobValidationJob, 0, len(sidecars))
+	sidecarIndex := 0
+	for txIndex, tx := range txs[:systemTxStart] {
+		if tx.Type() != types.BlobTxType {
+			continue
+		}
+		sidecar := sidecars[sidecarIndex]
+		jobs = append(jobs, bidBlockBlobValidationJob{
+			txIndex: txIndex,
+			tx:      tx.WithBlobTxSidecar(&sidecar.BlobTxSidecar),
+		})
+		sidecarIndex++
+	}
+
+	workers := len(jobs)
+	if workers > maxBlobValConcurrency {
+		workers = maxBlobValConcurrency
+	}
+	jobCh := make(chan bidBlockBlobValidationJob, len(jobs))
+	for _, job := range jobs {
+		jobCh <- job
+	}
+	close(jobCh)
+
+	errCh := make(chan error, len(jobs))
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for job := range jobCh {
+				if err := txpool.ValidateBlobTx(job.tx, header, nil); err != nil {
+					errCh <- fmt.Errorf("%w: %v", errInvalidBidBlockBlobTx, err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		return err
+	}
+	return nil
+}
+
+func (w *worker) enqueueBidBlockTask(task *task, systemTxs int) {
+	// assembleVoteAttestation + sign header happen inside Seal.
+	select {
+	case w.taskCh <- task:
+		log.Info("[BID BLOCK COMMIT]",
+			"number", task.block.Number(),
+			"bidHash", task.bidBlockInfo.bidHash,
+			"builder", task.bidBlockInfo.builder,
+			"txs", len(task.block.Transactions()),
+			"systemTxs", systemTxs,
+			"gas", task.block.GasUsed(),
+			"gasFee", weiToEtherStringF6(task.bidBlockInfo.gasFee),
+			"nontaxable", weiToEtherStringF6(task.bidBlockInfo.nontaxableFee.ToBig()))
+	case <-w.exitCh:
+		log.Info("Worker has exited")
+	}
+}
+
+// badBidBlockLoop revokes builders that have already burned enough other
+// validators, so this node need not be burned in turn.
+func (w *worker) badBidBlockLoop() {
+	defer w.wg.Done()
+	defer w.badBidBlockSub.Unsubscribe()
+
+	for {
+		select {
+		case ev := <-w.badBidBlockCh:
+			w.handleBadBidBlockEvidence(ev)
+		case <-w.badBidBlockSub.Err():
+			return
+		case <-w.exitCh:
+			return
+		}
+	}
+}
+
+// handleBadBidBlockEvidence records one validator's failing BidBlock and revokes
+// the builder once the evidence covers enough distinct validators.
+func (w *worker) handleBadBidBlockEvidence(ev core.BadBidBlockEvent) {
+	// Nil-checked: chain events reach nodes that never ran ApplyDefaultMinerConfig.
+	if !isTrue(w.config.Mev.Enabled) || !isTrue(w.config.Mev.BidBlockEnabled) {
+		return
+	}
+	if !w.permMgr.IsAllowed(ev.Builder) {
+		return
+	}
+	p, ok := w.engine.(*parlia.Parlia)
+	if !ok {
+		return
+	}
+	// At the parent, the state that decided this sealer's role. Not head: delivery
+	// is async, and head may already have crossed a breathe block.
+	role, cabinetCount, totalCount, err := p.SealerRole(ev.ParentHash, ev.Sealer)
+	if err != nil {
+		log.Warn("[BID BLOCK EVIDENCE] validator lookup failed",
+			"sealer", ev.Sealer, "builder", ev.Builder, "err", err)
+		return
+	}
+	if role == parlia.ValidatorRoleNone {
+		// The seal was already verified, so this means a stale view, not a forgery.
+		log.Debug("[BID BLOCK EVIDENCE] sealer not in validator set",
+			"sealer", ev.Sealer, "builder", ev.Builder, "number", ev.Number)
+		return
+	}
+
+	cabinetVotes, totalVotes := w.badBidBlocks.add(ev.Builder, ev.Sealer, role == parlia.ValidatorRoleCabinet)
+	// Thresholds follow this event's parent state. Valid sightings remain in the
+	// rolling window across validator-set changes, including jailing.
+	cabinetThreshold := majorityThreshold(cabinetCount)
+	totalThreshold := majorityThreshold(totalCount)
+	if cabinetVotes < cabinetThreshold && totalVotes < totalThreshold {
+		log.Info("[BID BLOCK EVIDENCE]",
+			"builder", ev.Builder,
+			"sealer", ev.Sealer,
+			"role", role,
+			"number", ev.Number,
+			"hash", ev.Hash,
+			"cabinetVotes", cabinetVotes,
+			"cabinetThreshold", cabinetThreshold,
+			"totalVotes", totalVotes,
+			"totalThreshold", totalThreshold)
+		return
+	}
+
+	reason := fmt.Sprintf("bad BidBlocks from %d/%d cabinet and %d/%d total validators",
+		cabinetVotes, cabinetThreshold, totalVotes, totalThreshold)
+	log.Error("[BID BLOCK EVIDENCE REVOKE]",
+		"builder", ev.Builder,
+		"cabinetVotes", cabinetVotes,
+		"cabinetThreshold", cabinetThreshold,
+		"totalVotes", totalVotes,
+		"totalThreshold", totalThreshold,
+		"lastSealer", ev.Sealer,
+		"number", ev.Number,
+		"hash", ev.Hash)
+	w.revokeBidBlockBuilder(ev.Builder, reason, ev.Hash, ev.Number)
+	bidBlockEvidenceRevokeCounter.Inc(1)
+	w.badBidBlocks.clear(ev.Builder)
+}
+
+func (w *worker) revokeBidBlockBuilder(builder common.Address, reason string, hash common.Hash, blockNum uint64) {
+	w.revokeBidBlockBuilderFor(builder, reason, hash, blockNum, bidBlockRevokeDuration)
+}
+
+func (w *worker) revokeBidBlockBuilderFor(builder common.Address, reason string, hash common.Hash, blockNum uint64, duration time.Duration) {
+	w.permMgr.RevokeFor(builder, reason, hash, blockNum, duration)
+	w.afterBidBlockRevoke()
+}
+
+func (w *worker) afterBidBlockRevoke() {
+	bidBlockRevokeGauge.Inc(1)
+	bidBlockRevokedBuildersGauge.Update(int64(w.permMgr.ActiveRevokeCount()))
+}
+
+// handleBidBlockResult handles a sealed BidBlock: broadcast, then InsertChain for verification.
+func (w *worker) handleBidBlockResult(block *types.Block, task *task) {
+	hash := block.Hash()
+
+	// Broadcast the block first (before verification)
+	stats := w.chain.GetBlockStats(hash)
+	stats.SendBlockTime.Store(time.Now().UnixMilli())
+	stats.StartMiningTime.Store(task.miningStartAt.UnixMilli())
+
+	log.Info("[BID BLOCK SEALED]",
+		"number", block.Number(),
+		"hash", hash,
+		"bidHash", task.bidBlockInfo.bidHash,
+		"builder", task.bidBlockInfo.builder,
+		"elapsed", common.PrettyDuration(time.Since(task.createdAt)))
+
+	w.mux.Post(core.NewSealedBlockEvent{Block: block})
+
+	// InsertChain re-executes all txs and validates fields the validator could
+	// not check at admission. Any mismatch is treated as builder dishonesty and
+	// revokes the builder for the default lockout window. Categories caught here:
+	//   - Root          (post-execution state root)
+	//   - ReceiptHash   (post-execution receipts trie root)
+	//   - Bloom         (post-execution logs bloom)
+	//   - GasUsed       (cumulative gas consumed)
+	//   - Tx precheck failures (nonce, balance, signature, intrinsic gas, ...)
+	//   - System tx value / params (e.g. deposit value vs. SystemAddress balance)
+	//   - Blob sidecar checks (KZG proofs, blob hashes)
+	//   - BEP-703's payment lane rule
+	verifyStart := time.Now()
+	_, insertErr := w.chain.InsertChain(types.Blocks{block})
+	bidBlockVerifyTimer.UpdateSince(verifyStart)
+	if insertErr != nil {
+		bidBlockVerifyFailedGauge.Inc(1)
+		// A failed local state read left the block unjudged, so it says nothing about the builder.
+		var violationCount int
+		if !errors.Is(insertErr, paymentlane.ErrStateUnavailable) {
+			reason := fmt.Sprintf("InsertChain err: %v", insertErr)
+			violationCount = w.permMgr.RevokeForViolation(task.bidBlockInfo.builder, reason, hash, block.NumberU64())
+			w.afterBidBlockRevoke()
+		}
+		log.Error("[BID BLOCK VERIFY FAILED]",
+			"number", block.Number(),
+			"hash", hash,
+			"bidHash", task.bidBlockInfo.bidHash,
+			"parentHash", block.ParentHash(),
+			"txs", len(block.Transactions()),
+			"gasUsed", block.GasUsed(),
+			"stateRoot", block.Root(),
+			"receiptHash", block.ReceiptHash(),
+			"builder", task.bidBlockInfo.builder,
+			"violationCount", violationCount,
+			"revokeDuration", bidBlockRevokeDuration,
+			"err", insertErr)
+		return
+	}
+	// Check the post-import average gas price excluding system transactions; only future BidBlock permission is revoked.
+	// Direct EOA contributions affect bid reward only and do not change the original
+	// BidBlock minimum-average-gas-price policy.
+	if receipts := w.chain.GetReceiptsByHash(block.Hash()); receipts != nil {
+		avgGasPrice, nonSystemGasUsed, err := validateBidBlockAverageGasPrice(
+			task.bidBlockInfo.gasFee,
+			receipts,
+			task.bidBlockInfo.systemTxStart,
+			w.config.GasPrice,
+		)
+		if err != nil {
+			log.Error("[BID BLOCK GASPRICE LOW]",
+				"number", block.Number(),
+				"hash", block.Hash(),
+				"bidHash", task.bidBlockInfo.bidHash,
+				"builder", task.bidBlockInfo.builder,
+				"avgGasPrice", avgGasPrice,
+				"minGasPrice", w.config.GasPrice,
+				"nonSystemGasUsed", nonSystemGasUsed,
+				"nonSystemTxs", task.bidBlockInfo.systemTxStart,
+				"revokeDuration", bidBlockGasPriceLowRevokeDuration,
+				"err", err)
+			w.revokeBidBlockBuilderFor(task.bidBlockInfo.builder, err.Error(), block.Hash(), block.NumberU64(), bidBlockGasPriceLowRevokeDuration)
+			return
+		}
+	}
+
+	log.Info("[BID BLOCK VERIFIED]",
+		"number", block.Number(),
+		"hash", hash,
+		"bidHash", task.bidBlockInfo.bidHash,
+		"builder", task.bidBlockInfo.builder,
+		"gasFee", weiToEtherStringF6(task.bidBlockInfo.gasFee),
+		"nontaxable", weiToEtherStringF6(task.bidBlockInfo.nontaxableFee.ToBig()))
+}

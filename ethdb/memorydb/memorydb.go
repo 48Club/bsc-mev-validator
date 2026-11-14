@@ -44,8 +44,6 @@ var (
 type Database struct {
 	db   map[string][]byte
 	lock sync.RWMutex
-
-	stateStore ethdb.Database
 }
 
 func (db *Database) ModifyAncients(f func(ethdb.AncientWriteOp) error) (int64, error) {
@@ -290,13 +288,6 @@ func (db *Database) Len() int {
 	return len(db.db)
 }
 
-func (db *Database) StateStoreReader() ethdb.Reader {
-	if db.stateStore == nil {
-		return db
-	}
-	return db.stateStore
-}
-
 // keyvalue is a key-value tuple tagged with a deletion field to allow creating
 // memory-database write batches.
 type keyvalue struct {
@@ -411,6 +402,9 @@ func (b *batch) Replay(w ethdb.KeyValueWriter) error {
 	}
 	return nil
 }
+
+// Close closes the batch and releases all associated resources.
+func (b *batch) Close() {}
 
 // iterator can walk over the (potentially partial) keyspace of a memory key
 // value store. Internally it is a deep copy of the entire iterated state,

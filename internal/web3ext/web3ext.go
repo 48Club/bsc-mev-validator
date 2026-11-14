@@ -144,6 +144,12 @@ web3._extend({
 			name: 'stopWS',
 			call: 'admin_stopWS'
 		}),
+		new web3._extend.Method({
+			name: 'setBidBlockPermission',
+			call: 'admin_setBidBlockPermission',
+			params: 2,
+			inputFormatter: [web3._extend.formatters.inputAddressFormatter, null]
+		}),
 	],
 	properties: [
 		new web3._extend.Property({
@@ -414,11 +420,6 @@ web3._extend({
 			inputFormatter:[null, null],
 		}),
 		new web3._extend.Method({
-			name: 'freezeClient',
-			call: 'debug_freezeClient',
-			params: 1,
-		}),
-		new web3._extend.Method({
 			name: 'getAccessibleState',
 			call: 'debug_getAccessibleState',
 			params: 2,
@@ -457,6 +458,12 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'stateSize',
 			call: 'debug_stateSize',
+			params: 1,
+			inputFormatter: [null],
+		}),
+		new web3._extend.Method({
+			name: 'executionWitness',
+			call: 'debug_executionWitness',
 			params: 1,
 			inputFormatter: [null],
 		}),
@@ -523,6 +530,18 @@ web3._extend({
 			params: 1
 		}),
 		new web3._extend.Method({
+			name: 'getCAS20TokenInfo',
+			call: 'eth_getCAS20TokenInfo',
+			params: 2,
+			inputFormatter: [web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputBlockNumberFormatter]
+		}),
+		new web3._extend.Method({
+			name: 'getCAS20TokenInfoBatch',
+			call: 'eth_getCAS20TokenInfoBatch',
+			params: 2,
+			inputFormatter: [null, web3._extend.formatters.inputBlockNumberFormatter]
+		}),
+		new web3._extend.Method({
 			name: 'getBlockByNumber',
 			call: 'eth_getBlockByNumber',
 			params: 2,
@@ -552,6 +571,12 @@ web3._extend({
 			call: 'eth_getProof',
 			params: 3,
 			inputFormatter: [web3._extend.formatters.inputAddressFormatter, null, web3._extend.formatters.inputBlockNumberFormatter]
+		}),
+		new web3._extend.Method({
+			name: 'getStorageValues',
+			call: 'eth_getStorageValues',
+			params: 2,
+			inputFormatter: [null, web3._extend.formatters.inputBlockNumberFormatter]
 		}),
 		new web3._extend.Method({
 			name: 'createAccessList',
@@ -669,12 +694,6 @@ web3._extend({
 		new web3._extend.Method({
 			name: 'setGasPrice',
 			call: 'miner_setGasPrice',
-			params: 1,
-			inputFormatter: [web3._extend.utils.fromDecimal]
-		}),
-		new web3._extend.Method({
-			name: 'setGasLimit',
-			call: 'miner_setGasLimit',
 			params: 1,
 			inputFormatter: [web3._extend.utils.fromDecimal]
 		}),

@@ -34,8 +34,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-verkle"
 )
 
 type VerifyStatus struct {
@@ -91,13 +91,6 @@ func (n *BlockNonce) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("BlockNonce", input, n[:])
 }
 
-// ExecutionWitness represents the witness + proof used in a verkle context,
-// to provide the ability to execute a block statelessly.
-type ExecutionWitness struct {
-	StateDiff   verkle.StateDiff    `json:"stateDiff"`
-	VerkleProof *verkle.VerkleProof `json:"verkleProof"`
-}
-
 //go:generate go run github.com/fjl/gencodec -type Header -field-override headerMarshaling -out gen_header_json.go
 //go:generate go run ../../rlp/rlpgen -type Header -out gen_header_rlp.go
 
@@ -136,6 +129,12 @@ type Header struct {
 
 	// RequestsHash was added by EIP-7685 and is ignored in legacy headers.
 	RequestsHash *common.Hash `json:"requestsHash" rlp:"optional"`
+
+	// BlockAccessListHash was added by EIP-7928 and is ignored in legacy headers.
+	BlockAccessListHash *common.Hash `json:"balHash" rlp:"optional"`
+
+	// SlotNumber was added by EIP-7843 and is ignored in legacy headers.
+	SlotNumber *uint64 `json:"slotNumber" rlp:"optional"`
 }
 
 // field type overrides for gencodec
@@ -150,6 +149,7 @@ type headerMarshaling struct {
 	Hash          common.Hash `json:"hash"` // adds call to Hash() in MarshalJSON
 	BlobGasUsed   *hexutil.Uint64
 	ExcessBlobGas *hexutil.Uint64
+	SlotNumber    *hexutil.Uint64
 }
 
 // Hash returns the block hash of the header, which is simply the keccak256 hash of its
@@ -235,123 +235,6 @@ type Body struct {
 	Withdrawals  []*Withdrawal `rlp:"optional"`
 }
 
-// StorageAccessItem is a single storage key that is accessed in a block.
-type StorageAccessItem struct {
-	TxIndex uint32 // index of the first transaction in the block that accessed the storage
-	Dirty   bool   // true if the storage was modified in the block, false if it was read only
-	Key     common.Hash
-}
-
-// AccountAccessListEncode & BlockAccessListEncode are for BAL serialization.
-type AccountAccessListEncode struct {
-	TxIndex      uint32 // index of the first transaction in the block that accessed the account
-	Address      common.Address
-	StorageItems []StorageAccessItem
-}
-
-type BlockAccessListEncode struct {
-	Version  uint32      // Version of the access list format
-	Number   uint64      // number of the block that the BAL is for
-	Hash     common.Hash // hash of the block that the BAL is for
-	SignData []byte      // sign data for BAL
-	Accounts []AccountAccessListEncode
-}
-
-// TxAccessListPrefetch & BlockAccessListPrefetch are for BAL prefetch
-type StorageAccessItemPrefetch struct {
-	Dirty bool
-	Key   common.Hash
-}
-
-type TxAccessListPrefetch struct {
-	Accounts map[common.Address][]StorageAccessItemPrefetch
-}
-
-type BlockAccessListPrefetch struct {
-	AccessListItems map[uint32]TxAccessListPrefetch
-}
-
-func (b *BlockAccessListPrefetch) Update(aclEncode *AccountAccessListEncode) {
-	if aclEncode == nil {
-		return
-	}
-	accAddr := aclEncode.Address
-	b.PrepareTxAccount(aclEncode.TxIndex, accAddr)
-	for _, storageItem := range aclEncode.StorageItems {
-		b.PrepareTxStorage(accAddr, storageItem)
-	}
-}
-
-func (b *BlockAccessListPrefetch) PrepareTxStorage(accAddr common.Address, storageItem StorageAccessItem) {
-	b.PrepareTxAccount(storageItem.TxIndex, accAddr)
-	txAccessList := b.AccessListItems[storageItem.TxIndex]
-	txAccessList.Accounts[accAddr] = append(txAccessList.Accounts[accAddr], StorageAccessItemPrefetch{
-		Dirty: storageItem.Dirty,
-		Key:   storageItem.Key,
-	})
-}
-func (b *BlockAccessListPrefetch) PrepareTxAccount(txIndex uint32, addr common.Address) {
-	// create the tx access list if not exists
-	if _, ok := b.AccessListItems[txIndex]; !ok {
-		b.AccessListItems[txIndex] = TxAccessListPrefetch{
-			Accounts: make(map[common.Address][]StorageAccessItemPrefetch),
-		}
-	}
-	// create the account access list if not exists
-	if _, ok := b.AccessListItems[txIndex].Accounts[addr]; !ok {
-		b.AccessListItems[txIndex].Accounts[addr] = make([]StorageAccessItemPrefetch, 0)
-	}
-}
-
-// BlockAccessListRecord & BlockAccessListRecord are used to record access list during tx execution.
-type AccountAccessListRecord struct {
-	TxIndex      uint32 // index of the first transaction in the block that accessed the account
-	StorageItems map[common.Hash]StorageAccessItem
-}
-
-type BlockAccessListRecord struct {
-	Version  uint32 // Version of the access list format
-	Accounts map[common.Address]AccountAccessListRecord
-}
-
-func (b *BlockAccessListRecord) AddAccount(addr common.Address, txIndex uint32) {
-	if b == nil {
-		return
-	}
-
-	if _, ok := b.Accounts[addr]; !ok {
-		b.Accounts[addr] = AccountAccessListRecord{
-			TxIndex:      txIndex,
-			StorageItems: make(map[common.Hash]StorageAccessItem),
-		}
-	}
-}
-
-func (b *BlockAccessListRecord) AddStorage(addr common.Address, key common.Hash, txIndex uint32, dirty bool) {
-	if b == nil {
-		return
-	}
-
-	if _, ok := b.Accounts[addr]; !ok {
-		b.Accounts[addr] = AccountAccessListRecord{
-			TxIndex:      txIndex,
-			StorageItems: make(map[common.Hash]StorageAccessItem),
-		}
-	}
-
-	if _, ok := b.Accounts[addr].StorageItems[key]; !ok {
-		b.Accounts[addr].StorageItems[key] = StorageAccessItem{
-			TxIndex: txIndex,
-			Dirty:   dirty,
-			Key:     key,
-		}
-	} else {
-		storageItem := b.Accounts[addr].StorageItems[key]
-		storageItem.Dirty = dirty
-		b.Accounts[addr].StorageItems[key] = storageItem
-	}
-}
-
 // Block represents an Ethereum block.
 //
 // Note the Block type tries to be 'immutable', and contains certain caches that rely
@@ -374,11 +257,7 @@ type Block struct {
 	uncles       []*Header
 	transactions Transactions
 	withdrawals  Withdrawals
-
-	// witness is not an encoded part of the block body.
-	// It is held in Block in order for easy relaying to the places
-	// that process it.
-	witness *ExecutionWitness
+	accessList   *bal.BlockAccessList
 
 	// caches
 	hash atomic.Pointer[common.Hash]
@@ -391,10 +270,6 @@ type Block struct {
 
 	// sidecars provides DA check
 	sidecars BlobSidecars
-
-	// bal provides block access list
-	bal     *BlockAccessListEncode
-	balSize atomic.Uint64
 }
 
 // "external" block encoding. used for eth protocol, etc.
@@ -502,6 +377,14 @@ func CopyHeader(h *Header) *Header {
 		cpy.RequestsHash = new(common.Hash)
 		*cpy.RequestsHash = *h.RequestsHash
 	}
+	if h.BlockAccessListHash != nil {
+		cpy.BlockAccessListHash = new(common.Hash)
+		*cpy.BlockAccessListHash = *h.BlockAccessListHash
+	}
+	if h.SlotNumber != nil {
+		cpy.SlotNumber = new(uint64)
+		*cpy.SlotNumber = *h.SlotNumber
+	}
 	return &cpy
 }
 
@@ -536,9 +419,10 @@ func (b *Block) Body() *Body {
 // Accessors for body data. These do not return a copy because the content
 // of the body slices does not affect the cached hash/size in block.
 
-func (b *Block) Uncles() []*Header          { return b.uncles }
-func (b *Block) Transactions() Transactions { return b.transactions }
-func (b *Block) Withdrawals() Withdrawals   { return b.withdrawals }
+func (b *Block) Uncles() []*Header                { return b.uncles }
+func (b *Block) Transactions() Transactions       { return b.transactions }
+func (b *Block) Withdrawals() Withdrawals         { return b.withdrawals }
+func (b *Block) AccessList() *bal.BlockAccessList { return b.accessList }
 
 func (b *Block) Transaction(hash common.Hash) *Transaction {
 	for _, transaction := range b.transactions {
@@ -602,8 +486,14 @@ func (b *Block) BlobGasUsed() *uint64 {
 	return blobGasUsed
 }
 
-// ExecutionWitness returns the verkle execution witneess + proof for a block
-func (b *Block) ExecutionWitness() *ExecutionWitness { return b.witness }
+func (b *Block) SlotNumber() *uint64 {
+	var slotNum *uint64
+	if b.header.SlotNumber != nil {
+		slotNum = new(uint64)
+		*slotNum = *b.header.SlotNumber
+	}
+	return slotNum
+}
 
 // Size returns the true RLP encoded storage size of the block, either by encoding
 // and returning it, or returning a previously cached value.
@@ -617,19 +507,6 @@ func (b *Block) Size() uint64 {
 	return uint64(c)
 }
 
-func (b *Block) BALSize() uint64 {
-	if b.bal == nil {
-		return 0
-	}
-	if size := b.balSize.Load(); size > 0 {
-		return size
-	}
-	c := writeCounter(0)
-	rlp.Encode(&c, b.bal)
-	b.balSize.Store(uint64(c))
-	return uint64(c)
-}
-
 func (b *Block) SetRoot(root common.Hash) { b.header.Root = root }
 
 // SanityCheck can be used to prevent that unbounded fields are
@@ -640,10 +517,6 @@ func (b *Block) SanityCheck() error {
 
 func (b *Block) Sidecars() BlobSidecars {
 	return b.sidecars
-}
-
-func (b *Block) BAL() *BlockAccessListEncode {
-	return b.bal
 }
 
 func (b *Block) CleanSidecars() {
@@ -699,9 +572,8 @@ func (b *Block) WithSeal(header *Header) *Block {
 		transactions: b.transactions,
 		uncles:       b.uncles,
 		withdrawals:  b.withdrawals,
-		witness:      b.witness,
+		accessList:   b.accessList,
 		sidecars:     b.sidecars,
-		bal:          b.bal,
 	}
 }
 
@@ -713,9 +585,8 @@ func (b *Block) WithBody(body Body) *Block {
 		transactions: slices.Clone(body.Transactions),
 		uncles:       make([]*Header, len(body.Uncles)),
 		withdrawals:  slices.Clone(body.Withdrawals),
-		witness:      b.witness,
+		accessList:   b.accessList,
 		sidecars:     b.sidecars,
-		bal:          b.bal,
 	}
 	for i := range body.Uncles {
 		block.uncles[i] = CopyHeader(body.Uncles[i])
@@ -729,9 +600,8 @@ func (b *Block) WithWithdrawals(withdrawals []*Withdrawal) *Block {
 		header:       b.header,
 		transactions: b.transactions,
 		uncles:       b.uncles,
-		witness:      b.witness,
+		accessList:   b.accessList,
 		sidecars:     b.sidecars,
-		bal:          b.bal,
 	}
 	if withdrawals != nil {
 		block.withdrawals = make([]*Withdrawal, len(withdrawals))
@@ -747,8 +617,7 @@ func (b *Block) WithSidecars(sidecars BlobSidecars) *Block {
 		transactions: b.transactions,
 		uncles:       b.uncles,
 		withdrawals:  b.withdrawals,
-		witness:      b.witness,
-		bal:          b.bal,
+		accessList:   b.accessList,
 	}
 	if sidecars != nil {
 		block.sidecars = make(BlobSidecars, len(sidecars))
@@ -757,30 +626,21 @@ func (b *Block) WithSidecars(sidecars BlobSidecars) *Block {
 	return block
 }
 
-func (b *Block) WithBAL(bal *BlockAccessListEncode) *Block {
-	block := &Block{
-		header:       b.header,
-		transactions: b.transactions,
-		uncles:       b.uncles,
-		withdrawals:  b.withdrawals,
-		witness:      b.witness,
-		sidecars:     b.sidecars,
-	}
-	block.bal = bal
-	return block
+// WithAccessList returns a copy of the block with the given access list embedded.
+func (b *Block) WithAccessList(accessList *bal.BlockAccessList) *Block {
+	return b.WithAccessListUnsafe(accessList.Copy())
 }
 
-func (b *Block) UpdateBAL(bal *BlockAccessListEncode) {
-	b.bal = bal
-}
-
-func (b *Block) WithWitness(witness *ExecutionWitness) *Block {
+// WithAccessListUnsafe returns a copy of the block with the given access list
+// embedded. Note that the access list is not deep-copied; use WithAccessList
+// if the provided list may be modified by other actors.
+func (b *Block) WithAccessListUnsafe(accessList *bal.BlockAccessList) *Block {
 	return &Block{
 		header:       b.header,
 		transactions: b.transactions,
 		uncles:       b.uncles,
 		withdrawals:  b.withdrawals,
-		witness:      witness,
+		accessList:   accessList,
 		sidecars:     b.sidecars,
 	}
 }

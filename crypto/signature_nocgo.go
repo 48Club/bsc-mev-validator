@@ -39,8 +39,14 @@ func Ecrecover(hash, sig []byte) ([]byte, error) {
 }
 
 func sigToPub(hash, sig []byte) (*secp256k1.PublicKey, error) {
+	if len(hash) != DigestLength {
+		return nil, fmt.Errorf("hash is required to be exactly %d bytes (%d)", DigestLength, len(hash))
+	}
 	if len(sig) != SignatureLength {
 		return nil, errors.New("invalid signature")
+	}
+	if len(hash) != DigestLength {
+		return nil, fmt.Errorf("hash is required to be exactly %d bytes (%d)", DigestLength, len(hash))
 	}
 	// Convert to secp256k1 input format with 'recovery id' v at the beginning.
 	btcsig := make([]byte, SignatureLength)
@@ -75,8 +81,8 @@ func SigToPub(hash, sig []byte) (*ecdsa.PublicKey, error) {
 //
 // The produced signature is in the [R || S || V] format where V is 0 or 1.
 func Sign(hash []byte, prv *ecdsa.PrivateKey) ([]byte, error) {
-	if len(hash) != 32 {
-		return nil, fmt.Errorf("hash is required to be exactly 32 bytes (%d)", len(hash))
+	if len(hash) != DigestLength {
+		return nil, fmt.Errorf("hash is required to be exactly %d bytes (%d)", DigestLength, len(hash))
 	}
 	if prv.Curve != S256() {
 		return nil, errors.New("private key curve is not secp256k1")
@@ -99,7 +105,7 @@ func Sign(hash []byte, prv *ecdsa.PrivateKey) ([]byte, error) {
 // The public key should be in compressed (33 bytes) or uncompressed (65 bytes) format.
 // The signature should have the 64 byte [R || S] format.
 func VerifySignature(pubkey, hash, signature []byte) bool {
-	if len(signature) != 64 {
+	if len(signature) != 64 || len(hash) != DigestLength {
 		return false
 	}
 	var r, s secp256k1.ModNScalar
