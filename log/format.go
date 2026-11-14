@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	timeFormat     = "2006-01-02T15:04:05-0700"
+	timeFormat     = "01-02|15:04:05.000"
 	termTimeFormat = "01-02|15:04:05.000"
 )
 
